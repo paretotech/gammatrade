@@ -208,42 +208,36 @@
 {% endif %}
 {% endif %}
 
-{# ─── Per-ticker × per-tier matrices ──────────────────────────────── #}
+{# ─── Per-ticker × per-tier matrices (with DTE filter tab) ────────── #}
 {% if data.ticker_matrix %}
-{% macro tier_cell(cell, kind) %}
-    {% if cell.n == 0 %}
-        <td class="py-2 mono text-right text-stone-300">—</td>
-    {% else %}
-        {% if kind == "mins" %}
-            <td class="py-2 mono text-right text-stone-700">
-                {% if cell.median_mins is none %}—
-                {% elif cell.median_mins < 60 %}{{ "%.0f"|format(cell.median_mins) }}m
-                {% elif cell.median_mins < 1440 %}{{ "%.1f"|format(cell.median_mins / 60) }}h
-                {% else %}{{ "%.1f"|format(cell.median_mins / 1440) }}d
-                {% endif %}
-                <span class="text-stone-400 text-[10px] ml-1">n={{ cell.n }}</span>
-            </td>
-        {% else %}
-            <td class="py-2 mono text-right
-                {% if cell.median_pct is none %}text-stone-300
-                {% elif cell.median_pct > 0 %}text-emerald-700
-                {% elif cell.median_pct < 0 %}text-red-700{% endif %}">
-                {% if cell.median_pct is none %}—
-                {% else %}{{ "%+.1f"|format(cell.median_pct) }}%
-                {% endif %}
-                <span class="text-stone-400 text-[10px] ml-1">n={{ cell.n }}</span>
-            </td>
-        {% endif %}
-    {% endif %}
-{% endmacro %}
+<div x-data='ladderMatrix({
+        byDte: {{ data.ticker_matrix_by_dte | tojson }},
+        buckets: {{ data.dte_buckets | tojson }},
+     })' class="space-y-4 mb-6">
 
-<div class="space-y-4 mb-6">
+    {# DTE filter tab — single source of truth for both tables below #}
+    <div class="flex items-baseline gap-2 flex-wrap">
+        <span class="text-[10px] uppercase tracking-wider text-stone-500 font-medium mr-1">
+            DTE filter
+        </span>
+        <template x-for="b in buckets" :key="b.slug">
+            <button type="button" @click="active = b.slug"
+                    :class="active === b.slug
+                        ? 'border-emerald-600 text-emerald-700 font-medium bg-emerald-50'
+                        : 'border-stone-200 text-stone-500 hover:text-stone-900 hover:border-stone-300'"
+                    class="px-2.5 py-1 rounded border text-[12px] transition-colors">
+                <span x-text="b.label"></span>
+                <span class="text-[10px] text-stone-400 ml-1 mono" x-text="'(' + b.n_trades + ')'"></span>
+            </button>
+        </template>
+    </div>
+
     {# Table 1: time-to-TP per underlying #}
     <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
         <div class="px-5 py-3 border-b border-stone-200">
             <h3 class="text-[13px] font-semibold text-stone-700">Time to TP — by underlying</h3>
             <p class="text-[11px] text-stone-500 mt-0.5">
-                Median minutes (or h / d when longer) from entry to the TP fill at each tier.
+                Median minutes / hours / days from entry to the TP fill at each tier.
             </p>
         </div>
         <table class="w-full text-[12px]">
@@ -256,25 +250,21 @@
                 </tr>
             </thead>
             <tbody class="divide-y divide-stone-100">
-                {% for r in data.ticker_matrix %}
-                <tr class="hover:bg-stone-50">
-                    <td class="px-5 py-2 mono font-medium">{{ r.ticker }}</td>
-                    {{ tier_cell(r.tiers[1], "mins") }}
-                    {{ tier_cell(r.tiers[2], "mins") }}
-                    {% set c = r.tiers[3] %}
-                    {% if c.n == 0 %}
-                        <td class="py-2 mono text-right pr-5 text-stone-300">—</td>
-                    {% else %}
-                        <td class="py-2 mono text-right pr-5 text-stone-700">
-                            {% if c.median_mins < 60 %}{{ "%.0f"|format(c.median_mins) }}m
-                            {% elif c.median_mins < 1440 %}{{ "%.1f"|format(c.median_mins / 60) }}h
-                            {% else %}{{ "%.1f"|format(c.median_mins / 1440) }}d
-                            {% endif %}
-                            <span class="text-stone-400 text-[10px] ml-1">n={{ c.n }}</span>
-                        </td>
-                    {% endif %}
+                <template x-for="r in rows" :key="r.ticker">
+                    <tr class="hover:bg-stone-50">
+                        <td class="px-5 py-2 mono font-medium" x-text="r.ticker"></td>
+                        <template x-for="tier in [1, 2, 3]" :key="tier">
+                            <td class="py-2 mono text-right text-stone-700"
+                                :class="r.tiers[tier].n === 0 ? 'text-stone-300' : ''"
+                                x-html="fmtMins(r.tiers[tier])"></td>
+                        </template>
+                    </tr>
+                </template>
+                <tr x-show="rows.length === 0">
+                    <td colspan="4" class="px-5 py-6 text-center text-[11px] text-stone-400">
+                        No trades in this DTE bucket.
+                    </td>
                 </tr>
-                {% endfor %}
             </tbody>
         </table>
     </div>
@@ -284,9 +274,8 @@
         <div class="px-5 py-3 border-b border-stone-200">
             <h3 class="text-[13px] font-semibold text-stone-700">ROI at TP — by underlying</h3>
             <p class="text-[11px] text-stone-500 mt-0.5">
-                Median % gain above entry at each TP fill. Negative cells (red)
-                mean the broker tagged a below-entry exit as a TP — likely a
-                stop wearing a TP label.
+                Median % gain above entry at each TP fill. Negative cells (red) flag
+                broker-tagged below-entry exits — likely stops wearing a TP label.
             </p>
         </div>
         <table class="w-full text-[12px]">
@@ -299,28 +288,54 @@
                 </tr>
             </thead>
             <tbody class="divide-y divide-stone-100">
-                {% for r in data.ticker_matrix %}
-                <tr class="hover:bg-stone-50">
-                    <td class="px-5 py-2 mono font-medium">{{ r.ticker }}</td>
-                    {{ tier_cell(r.tiers[1], "pct") }}
-                    {{ tier_cell(r.tiers[2], "pct") }}
-                    {% set c = r.tiers[3] %}
-                    {% if c.n == 0 %}
-                        <td class="py-2 mono text-right pr-5 text-stone-300">—</td>
-                    {% else %}
-                        <td class="py-2 mono text-right pr-5
-                            {% if c.median_pct > 0 %}text-emerald-700
-                            {% elif c.median_pct < 0 %}text-red-700{% endif %}">
-                            {{ "%+.1f"|format(c.median_pct) }}%
-                            <span class="text-stone-400 text-[10px] ml-1">n={{ c.n }}</span>
-                        </td>
-                    {% endif %}
+                <template x-for="r in rows" :key="r.ticker">
+                    <tr class="hover:bg-stone-50">
+                        <td class="px-5 py-2 mono font-medium" x-text="r.ticker"></td>
+                        <template x-for="tier in [1, 2, 3]" :key="tier">
+                            <td class="py-2 mono text-right"
+                                :class="pctColor(r.tiers[tier])"
+                                x-html="fmtPct(r.tiers[tier])"></td>
+                        </template>
+                    </tr>
+                </template>
+                <tr x-show="rows.length === 0">
+                    <td colspan="4" class="px-5 py-6 text-center text-[11px] text-stone-400">
+                        No trades in this DTE bucket.
+                    </td>
                 </tr>
-                {% endfor %}
             </tbody>
         </table>
     </div>
 </div>
+
+<script>
+function ladderMatrix({ byDte, buckets }) {
+    return {
+        byDte, buckets,
+        active: "all",
+        get rows() { return this.byDte[this.active] || []; },
+        fmtMins(cell) {
+            if (!cell || cell.n === 0 || cell.median_mins == null) return '—';
+            const m = cell.median_mins;
+            const txt = m < 60 ? `${Math.round(m)}m`
+                       : m < 1440 ? `${(m / 60).toFixed(1)}h`
+                       : `${(m / 1440).toFixed(1)}d`;
+            return `${txt} <span class="text-stone-400 text-[10px] ml-1">n=${cell.n}</span>`;
+        },
+        fmtPct(cell) {
+            if (!cell || cell.n === 0 || cell.median_pct == null) return '—';
+            const v = cell.median_pct;
+            const txt = (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+            return `${txt} <span class="text-stone-400 text-[10px] ml-1">n=${cell.n}</span>`;
+        },
+        pctColor(cell) {
+            if (!cell || cell.n === 0 || cell.median_pct == null) return 'text-stone-300';
+            return cell.median_pct > 0 ? 'text-emerald-700'
+                 : cell.median_pct < 0 ? 'text-red-700' : 'text-stone-700';
+        },
+    };
+}
+</script>
 {% endif %}
 
 {# ─── What-if ladder simulator ─────────────────────────────────────── #}

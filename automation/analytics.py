@@ -2211,36 +2211,70 @@ def ladder_analysis(range_key: str = "all") -> dict:
             "avg_pnl":       round(row["total_pnl"] / row["n"], 0) if row["n"] else 0,
         })
 
-    # ── Per-ticker × per-tier matrix ─────────────────────────────────
+    # ── Per-ticker × per-tier matrix, split by DTE bucket ────────────
     # Two rollups with tickers as rows and TP tiers as columns:
     #   - median minutes from entry to each TP fill
     #   - median % gain over entry at each TP fill
-    # Filtered to tickers with at least one TP1 fill, sorted by total
-    # TP1 fill count desc.
-    by_ticker_tier: dict[tuple, list[dict]] = defaultdict(list)
-    by_ticker_total: dict[str, int] = defaultdict(int)
-    for t in trades:
-        ticker = t["ticker"]
-        for f in t.get("tp_fills") or []:
-            tier = f.get("tier")
-            if tier in (1, 2, 3):
-                by_ticker_tier[(ticker, tier)].append(f)
-                by_ticker_total[ticker] += 1
+    # Returned as {bucket: matrix}, where bucket ∈ all / 0 / 1-2 / 3-7 / 8+.
+    # The frontend uses these for a DTE filter tab without reloading.
+    def _dte_for(t: dict) -> Optional[int]:
+        fe = t.get("first_entry_ts")
+        exp = t.get("expiry")
+        if not fe or not exp:
+            return None
+        try:
+            return (date.fromisoformat(str(exp)[:10])
+                    - date.fromisoformat(fe[:10])).days
+        except (ValueError, TypeError):
+            return None
 
-    ticker_matrix = []
-    for ticker in sorted(by_ticker_total.keys(),
-                         key=lambda k: -by_ticker_total[k]):
-        row = {"ticker": ticker, "tiers": {}}
-        for tier in (1, 2, 3):
-            fills = by_ticker_tier.get((ticker, tier), [])
-            pcts = [f["pct"]  for f in fills if f.get("pct")  is not None]
-            mins = [f["mins"] for f in fills if f.get("mins") is not None]
-            row["tiers"][tier] = {
-                "n":          len(fills),
-                "median_pct": round(median(pcts), 1) if pcts else None,
-                "median_mins":round(median(mins), 1) if mins else None,
-            }
-        ticker_matrix.append(row)
+    DTE_BUCKETS = [
+        ("all",  "All",  lambda d: True),
+        ("0",    "0DTE", lambda d: d == 0),
+        ("1-2",  "1–2",  lambda d: d is not None and 1 <= d <= 2),
+        ("3-7",  "3–7",  lambda d: d is not None and 3 <= d <= 7),
+        ("8+",   "8+",   lambda d: d is not None and d >= 8),
+    ]
+
+    matrices_by_bucket: dict[str, list[dict]] = {}
+    bucket_counts: dict[str, int] = {}
+    for slug, _label, fn in DTE_BUCKETS:
+        bucket_trades = [t for t in trades if fn(_dte_for(t))]
+        bucket_counts[slug] = len(bucket_trades)
+
+        by_ticker_tier: dict[tuple, list[dict]] = defaultdict(list)
+        by_ticker_total: dict[str, int] = defaultdict(int)
+        for t in bucket_trades:
+            ticker = t["ticker"]
+            for f in t.get("tp_fills") or []:
+                tier = f.get("tier")
+                if tier in (1, 2, 3):
+                    by_ticker_tier[(ticker, tier)].append(f)
+                    by_ticker_total[ticker] += 1
+
+        matrix = []
+        for ticker in sorted(by_ticker_total.keys(),
+                             key=lambda k: -by_ticker_total[k]):
+            row = {"ticker": ticker, "tiers": {}}
+            for tier in (1, 2, 3):
+                fills = by_ticker_tier.get((ticker, tier), [])
+                pcts = [f["pct"]  for f in fills if f.get("pct")  is not None]
+                mins = [f["mins"] for f in fills if f.get("mins") is not None]
+                row["tiers"][tier] = {
+                    "n":          len(fills),
+                    "median_pct": round(median(pcts), 1) if pcts else None,
+                    "median_mins":round(median(mins), 1) if mins else None,
+                }
+            matrix.append(row)
+        matrices_by_bucket[slug] = matrix
+
+    # Keep the legacy ticker_matrix field pointing at the all-DTE rollup
+    # so any consumer that was reading it stays unchanged.
+    ticker_matrix = matrices_by_bucket["all"]
+    dte_buckets = [
+        {"slug": slug, "label": label, "n_trades": bucket_counts[slug]}
+        for slug, label, _ in DTE_BUCKETS
+    ]
 
     return {
         "range_key":      range_key,
@@ -2251,6 +2285,8 @@ def ladder_analysis(range_key: str = "all") -> dict:
         "completion_rows": completion_rows,
         "progression":    progression_comparison,
         "ticker_matrix":  ticker_matrix,
+        "ticker_matrix_by_dte": matrices_by_bucket,
+        "dte_buckets":    dte_buckets,
     }
 
 
