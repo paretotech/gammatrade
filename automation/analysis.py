@@ -47,12 +47,17 @@ PER-PICK OUTPUT — be RUTHLESSLY concise. Each field has a tight word cap.
 + structure (e.g. "ATM/1-OTM call on PDH reclaim above 700"). \
 No commentary, no rationale, just the trade.
 - invalidation — the ONE price or condition that kills it. ≤12 words. \
-(e.g. "falls below 700"). No "if X, do Y" — just the trigger.
+PREFER the `stop_ref_level` from the Setup eval when one is provided \
+(e.g. "falls below 697.30"). No "if X, do Y" — just the trigger.
 - edge         — historical stats as inline shorthand. Format: \
 "cohort +MED%/WR% (n=N) · you +MED%/WR% (n=N)". Use exact numbers from the \
 data block. If a side has no history, write "you n=0".
 - risk         — ONE sentence, ≤20 words. The single most important risk. \
-If personal track record is materially worse than cohort, lead with that.
+WHEN the Setup eval shows R:R verdict POOR or INCOMPLETE, the risk MUST \
+lead with that explicitly (e.g. "R:R 0.69 — risking 1.14% to capture \
+0.78%; setup gives more than it gets"). When the level is OFF-level (not on \
+or near a published support/resistance), call that out too. Otherwise lead \
+with personal-record gaps when relevant.
 - reasoning    — OPTIONAL single short sentence (≤15 words) only when the \
 verdict needs context the four fields above don't carry. Skip otherwise.
 
@@ -215,12 +220,55 @@ def _build_user_prompt(parsed: dict, today: str) -> str:
 
     lines.append(f"PRE-GAME PICKS (n={len(parsed['candidates'])}):")
     for c in parsed["candidates"]:
+        # Deterministic setup evaluation against published levels.
+        # We pre-compute it server-side and inject the facts so Claude
+        # can ground its plan/risk fields in real numbers instead of
+        # making up R/R from the price tick.
+        ev = _lv.evaluate_pick_level(c.ticker, c.level, c.direction)
+        if ev is not None:
+            level_str = (
+                f"ON published ${ev['matched_level']:g}"
+                if ev["level_status"] == "on"
+                else f"NEAR published ${ev['matched_level']:g} ({ev['matched_dist_pct']}% off)"
+                if ev["level_status"] == "near"
+                else f"OFF — closest published ${ev['matched_level'] or '?'} is {ev['matched_dist_pct']}% away"
+                if ev["matched_level"] is not None
+                else "OFF — entry is above ALL mapped levels (ATH territory)"
+            )
+            stop_t   = ev["stop_ref_level"]
+            tgt_t    = ev["target_ref_level"]
+            rew      = ev["reward_pct"]
+            risk_v   = ev["risk_pct"]
+            rr       = ev["rr_ratio"]
+            verdict  = ev["rr_verdict"].upper()
+            rr_str = (
+                f"reward {rew}% (target ${tgt_t:g}) · risk {risk_v}% (stop ${stop_t:g}) "
+                f"· R:R {rr:.2f} → {verdict}"
+                if rr is not None
+                else (
+                    f"reward {rew}% (target ${tgt_t:g}) · NO mapped stop level "
+                    f"→ {verdict}"
+                    if rew is not None and tgt_t is not None
+                    else f"risk {risk_v}% (stop ${stop_t:g}) · NO mapped target level "
+                         f"(above all resistance) → {verdict}"
+                    if risk_v is not None and stop_t is not None
+                    else f"→ {verdict} (no mapped levels around entry)"
+                )
+            )
+            try:
+                c._setup_eval = ev   # stash for downstream render (frozen=False)
+            except Exception:
+                pass
+
         b_all = c.historical["reference"]["all"]
         b_calls = c.historical["reference"]["calls"]
         s_all = c.historical["user"]["all"]
         lines.append(
             f"  {c.ticker} {c.direction} {c.level:g}  score={c.score:.0f}"
         )
+        if ev is not None:
+            lines.append(f"    Setup eval: level {level_str}")
+            lines.append(f"                {rr_str}")
 
         def _fmt_stats(label: str, st: dict) -> str:
             n = st.get("n", 0)

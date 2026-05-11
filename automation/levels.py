@@ -350,3 +350,110 @@ def parse_pasted_levels(text: str,
             note="",
         ))
     return out
+
+
+# ─── Setup evaluation ────────────────────────────────────────────────────
+# Two questions every pregame pick should answer deterministically:
+#   1. Does the entry level make sense — i.e. is it actually on a published
+#      support/resistance, or did the trader pick a number that doesn't
+#      correspond to any mapped level?
+#   2. From that level to the next-level boundary on each side, what's the
+#      reward-to-risk ratio in the underlying?
+# Both go into the pregame analysis so Claude (and the trader) judge
+# setup quality before sizing — not just structure quality.
+
+def evaluate_pick_level(ticker: str,
+                        entry_level: float,
+                        direction: str,
+                        on_tolerance_pct: float = 0.25,
+                        near_tolerance_pct: float = 0.5) -> Optional[dict]:
+    """Score a proposed pregame entry against the ticker's published levels.
+
+    Args:
+        direction: 'above' (bullish, call-style break) or 'below' (bearish).
+
+    Returns None if no level snapshot exists for the ticker. Otherwise
+    returns a dict with:
+      - level_status:     'on' | 'near' | 'off'
+      - matched_level:    the published level the entry snaps to (or None)
+      - matched_dist_pct: % distance from entry to matched_level
+      - stop_ref_level:   nearest published level on the stop side
+      - target_ref_level: nearest published level on the target side
+      - reward_pct:       % move from entry to target_ref (signed positive
+                          when the trade direction agrees with the target)
+      - risk_pct:         % move from entry to stop_ref (always positive
+                          magnitude — the distance you'd give up to stop)
+      - rr_ratio:         reward/risk (None when either side is missing)
+      - rr_verdict:       'good' (≥2.0) | 'fair' (1.0-2.0) | 'poor' (<1.0)
+                          | 'incomplete' (one side missing)
+    """
+    snap = latest_for_ticker(ticker)
+    if snap is None:
+        return None
+
+    all_levels  = sorted(set((snap.levels_below or []) + (snap.levels_above or [])))
+    if not all_levels:
+        return None
+
+    # ── Question 1: does the entry level snap to a published one? ────
+    closest = min(all_levels, key=lambda v: abs(v - entry_level))
+    dist_pct = abs(closest - entry_level) / entry_level * 100 if entry_level else None
+
+    if dist_pct is None:
+        status = "off"
+    elif dist_pct <= on_tolerance_pct:
+        status = "on"
+    elif dist_pct <= near_tolerance_pct:
+        status = "near"
+    else:
+        status = "off"
+
+    matched_level = closest if status in ("on", "near") else None
+
+    # ── Question 2: R/R to the next published level ──────────────────
+    # For a bullish "above" pick, the trader is buying a break:
+    #   reward = next published level ABOVE entry
+    #   risk   = nearest published level BELOW entry  (= where you'd cover)
+    # For a bearish "below" pick, inverse.
+    above_levels = [v for v in all_levels if v > entry_level]
+    below_levels = [v for v in all_levels if v < entry_level]
+    next_up   = min(above_levels) if above_levels else None
+    next_down = max(below_levels) if below_levels else None
+
+    if direction == "below":
+        target_ref = next_down
+        stop_ref   = next_up
+    else:    # default to bullish ('above' or unknown)
+        target_ref = next_up
+        stop_ref   = next_down
+
+    reward_pct = None
+    risk_pct   = None
+    rr_ratio   = None
+    if target_ref is not None and entry_level > 0:
+        reward_pct = abs(target_ref - entry_level) / entry_level * 100
+    if stop_ref is not None and entry_level > 0:
+        risk_pct = abs(entry_level - stop_ref) / entry_level * 100
+    if reward_pct is not None and risk_pct is not None and risk_pct > 0:
+        rr_ratio = reward_pct / risk_pct
+
+    if rr_ratio is None:
+        rr_verdict = "incomplete"
+    elif rr_ratio >= 2.0:
+        rr_verdict = "good"
+    elif rr_ratio >= 1.0:
+        rr_verdict = "fair"
+    else:
+        rr_verdict = "poor"
+
+    return {
+        "level_status":     status,
+        "matched_level":    matched_level,
+        "matched_dist_pct": round(dist_pct, 2) if dist_pct is not None else None,
+        "stop_ref_level":   stop_ref,
+        "target_ref_level": target_ref,
+        "reward_pct":       round(reward_pct, 2) if reward_pct is not None else None,
+        "risk_pct":         round(risk_pct, 2) if risk_pct is not None else None,
+        "rr_ratio":         round(rr_ratio, 2) if rr_ratio is not None else None,
+        "rr_verdict":       rr_verdict,
+    }
