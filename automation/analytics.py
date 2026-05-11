@@ -2031,9 +2031,12 @@ def loser_levels_analysis(range_key: str = "all",
 
     losers  = sorted(
         (c for c in enriched if not c["is_winner"]),
-        key=lambda c: c["realized_pnl"],   # worst losses first
+        key=lambda c: c["realized_pnl"],            # worst losses first
     )
-    winners = [c for c in enriched if c["is_winner"]]
+    winners = sorted(
+        (c for c in enriched if c["is_winner"]),
+        key=lambda c: -c["realized_pnl"],           # biggest wins first
+    )
 
     # ── Distance buckets ──────────────────────────────────────────────
     # "How close was this trade to ANY level at entry?" Both winners and
@@ -2104,4 +2107,5 @@ def loser_levels_analysis(range_key: str = "all",
         "summary":       summary,
         "buckets":       buckets,
         "losers":        losers,
+        "winners":       winners,
     }
