@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_settings_tabs.html" %}
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-2xl">
+    API keys for optional Claude-powered features (pregame analysis on
+    <a href="/pregame" class="text-emerald-700 hover:underline">/pregame</a> and
+    EOD review on <a href="/journal" class="text-emerald-700 hover:underline">/journal</a>).
+    Keys are stored at <code class="mono">~/.gamma/automation/secrets.json</code>
+    with owner-only file permissions (0600) and are never logged. A value
+    exported in your shell (<code class="mono">export ANTHROPIC_API_KEY=…</code>)
+    always wins over what's saved here.
+</p>
+
+{% if request.query_params.get("saved") %}
+<div class="bg-emerald-50 border border-emerald-200 rounded p-3 text-[12px] text-emerald-800 mb-4 max-w-2xl">
+    ✓ Saved. The new key is active in this running server immediately — no restart needed.
+</div>
+{% elif request.query_params.get("deleted") %}
+<div class="bg-stone-100 border border-stone-200 rounded p-3 text-[12px] text-stone-700 mb-4 max-w-2xl">
+    ✓ Key cleared.
+</div>
+{% endif %}
+
+{% set ak = keys.anthropic_api_key %}
+
+<div class="bg-white border border-stone-200 rounded-lg p-5 max-w-2xl">
+    <div class="flex items-baseline justify-between mb-3">
+        <div>
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">ANTHROPIC_API_KEY</div>
+            <div class="text-[11px] text-stone-400 mt-0.5">Used by pregame analysis + EOD review.</div>
+        </div>
+        {% if ak.set %}
+        <span class="text-[11px] mono px-2 py-0.5 rounded
+            {% if ak.source == 'env' %}bg-blue-50 text-blue-700 border border-blue-200
+            {% else %}bg-emerald-50 text-emerald-700 border border-emerald-200{% endif %}">
+            {% if ak.source == 'env' %}set in shell{% else %}saved in app{% endif %}
+        </span>
+        {% else %}
+        <span class="text-[11px] mono px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+            not set
+        </span>
+        {% endif %}
+    </div>
+
+    {% if ak.set %}
+    <div class="text-[12px] mono text-stone-700 bg-stone-50 border border-stone-200 rounded px-3 py-2 mb-4">
+        current value: {{ ak.masked }}
+    </div>
+    {% endif %}
+
+    {% if ak.source == 'env' %}
+    <div class="text-[12px] bg-blue-50 border border-blue-200 rounded p-3 text-stone-700 mb-4">
+        This key is currently set via shell export, not the app's secret store.
+        Saving a value below will write it to disk too, so it persists across
+        restarts — but on the next launch the shell-exported value (if still
+        present) will continue to take precedence. To use the saved value
+        exclusively, <code class="mono">unset ANTHROPIC_API_KEY</code> in your
+        shell and restart the server.
+    </div>
+    {% endif %}
+
+    <form method="post" action="/settings/keys" class="space-y-3"
+          x-data="{ revealed: false }">
+        <div>
+            <label class="block text-[12px] font-medium text-stone-700 mb-1">
+                {% if ak.set %}Replace{% else %}Set{% endif %} key
+            </label>
+            <p class="text-[11px] text-stone-500 mb-1.5">
+                Paste a key starting with <code class="mono">sk-ant-</code>. Empty submission is ignored
+                (use <em>Clear saved key</em> below to remove the stored value).
+            </p>
+            <div class="flex gap-2">
+                <input :type="revealed ? 'text' : 'password'"
+                       name="anthropic_api_key"
+                       placeholder="sk-ant-…"
+                       autocomplete="off" spellcheck="false"
+                       class="mono flex-1 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <button type="button" @click="revealed = !revealed"
+                        class="px-3 py-2 text-[12px] text-stone-600 border border-stone-300 rounded-md hover:bg-stone-50">
+                    <span x-text="revealed ? 'Hide' : 'Show'"></span>
+                </button>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between pt-2">
+            <button type="submit"
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-stone-900 hover:bg-stone-700 text-white text-[12px] font-medium transition-colors">
+                Save key
+            </button>
+        </div>
+    </form>
+
+    {% if ak.set and ak.source == 'file' %}
+    <form method="post" action="/settings/keys/delete" class="pt-4 mt-4 border-t border-stone-100"
+          onsubmit="return confirm('Remove the saved ANTHROPIC_API_KEY? Pregame and EOD analysis will return to the no-key state until you set it again.');">
+        <button type="submit"
+                class="text-[11px] text-red-700 hover:underline">
+            Clear saved key
+        </button>
+    </form>
+    {% endif %}
+</div>
+
+{% endblock %}

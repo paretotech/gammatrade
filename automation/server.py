@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import state, telemetry, gates, pregame, triggers as triggers_mod, analysis, journal, eod_analysis
+from . import state, telemetry, gates, pregame, triggers as triggers_mod, analysis, journal, eod_analysis, secrets as user_secrets
 from .rules import Rules, CONFIG_PATH
 from .orders import TradeIntent, get_broker
 
@@ -38,6 +38,9 @@ app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 # Lifespan: init DB, load rules, seed demo data, start watcher
 @app.on_event("startup")
 async def on_startup() -> None:
+    # Load user-managed API keys from disk into os.environ before any
+    # module that reads them runs. Shell-exported values always win.
+    user_secrets.load_into_env()
     state.init_db()
     state.seed_demo_data()
     telemetry.seed_demo_events()
@@ -1654,6 +1657,42 @@ async def journal_save(
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_landing(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/settings/rules", status_code=303)
+
+
+# ─── Settings: API keys ─────────────────────────────────────────────────────
+
+@app.get("/settings/keys", response_class=HTMLResponse)
+async def settings_keys_view(request: Request) -> HTMLResponse:
+    return TEMPLATES.TemplateResponse(
+        "keys.html",
+        {
+            "request":    request,
+            "page_title": "Settings",
+            "active_tab": "keys",
+            "keys":       user_secrets.status(),
+            **nav_context(),
+        },
+    )
+
+
+@app.post("/settings/keys", response_class=HTMLResponse)
+async def settings_keys_save(
+    request: Request,
+    anthropic_api_key: str = Form(""),
+) -> RedirectResponse:
+    # Empty submission means "leave whatever's there alone" — explicit
+    # deletion goes through the separate /delete endpoint so a stray
+    # blank submit can't wipe a working key by accident.
+    val = (anthropic_api_key or "").strip()
+    if val:
+        user_secrets.save("anthropic_api_key", val)
+    return RedirectResponse(url="/settings/keys?saved=1", status_code=303)
+
+
+@app.post("/settings/keys/delete", response_class=HTMLResponse)
+async def settings_keys_delete(request: Request) -> RedirectResponse:
+    user_secrets.clear("anthropic_api_key")
+    return RedirectResponse(url="/settings/keys?deleted=1", status_code=303)
 
 
 # ─── Settings: Broker ───────────────────────────────────────────────────────
