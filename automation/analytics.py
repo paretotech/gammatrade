@@ -1965,3 +1965,143 @@ def winner_profile(range_key: str = "all",
         "losers_pnl":  round(sum(c.get("realized_pnl") or 0 for c in losers), 0),
         "rows":        rows,
     }
+
+
+# ─── Losing trades vs levels ──────────────────────────────────────────────
+# Pivot the levels enrichment around losing trades. Surfaces:
+#   - median distance to nearest support / resistance for losers vs winners
+#   - bucketed WR by distance-to-nearest-level
+#   - sortable per-loser detail table with both directions' distances
+
+def loser_levels_analysis(range_key: str = "all",
+                          proximity_pct: float = 0.5) -> dict:
+    """For each closed trade, compute distance to nearest support and
+    nearest resistance at entry. Then pivot to surface the losing
+    trades and how they compare to winners on those metrics.
+
+    A "loser" here is realized_pnl <= 0 (binary). For more granular
+    analysis (top vs bottom quartile by realized %) see winner_profile.
+    """
+    trades = closed_trades(limit=5000, range_key=range_key)
+
+    enriched = []
+    for t in trades:
+        entry_ts = t.get("first_entry_ts")
+        if not entry_ts:
+            continue
+        ticker = t["ticker"]
+        under = _underlying_price_at(ticker, entry_ts)
+        snap  = _active_levels_at(ticker, entry_ts)
+        if under is None or snap is None:
+            continue
+
+        cls = _classify_position(under, snap, proximity_pct)
+        nearest_above = cls["nearest_above"]
+        nearest_below = cls["nearest_below"]
+        dist_above    = cls["dist_above_pct"]
+        dist_below    = cls["dist_below_pct"]
+
+        # "Nearest overall" is the minimum of the two — direction-agnostic
+        nearest_dist = None
+        for d in (dist_above, dist_below):
+            if d is not None and (nearest_dist is None or d < nearest_dist):
+                nearest_dist = d
+
+        is_winner = (t.get("realized_pnl") or 0) > 0
+        enriched.append({
+            "intent_id":          t["intent_id"],
+            "ticker":             t["ticker"],
+            "strike":             t.get("strike"),
+            "right":              t.get("right"),
+            "entry_ts":           entry_ts,
+            "exit_ts":            t.get("last_exit_ts"),
+            "underlying":         under,
+            "nearest_above":      nearest_above,
+            "nearest_below":      nearest_below,
+            "dist_above_pct":     dist_above,
+            "dist_below_pct":     dist_below,
+            "nearest_dist_pct":   nearest_dist,
+            "bucket":             cls["bucket"],
+            "actual_pct":         t.get("actual_pct"),
+            "mfe_in_pct":         t.get("mfe_in_pct"),
+            "capture_pct":        t.get("capture_pct"),
+            "realized_pnl":       t.get("realized_pnl") or 0,
+            "is_winner":          is_winner,
+        })
+
+    losers  = sorted(
+        (c for c in enriched if not c["is_winner"]),
+        key=lambda c: c["realized_pnl"],   # worst losses first
+    )
+    winners = [c for c in enriched if c["is_winner"]]
+
+    # ── Distance buckets ──────────────────────────────────────────────
+    # "How close was this trade to ANY level at entry?" Both winners and
+    # losers go through the same bucketing so we can read the win-rate
+    # column to see whether tight-to-level entries are actually better.
+    def _bucket(d):
+        if d is None:    return "no level"
+        if d <= 0.25:    return "<0.25%"
+        if d <= 0.5:     return "0.25–0.5%"
+        if d <= 1.0:     return "0.5–1%"
+        if d <= 2.0:     return "1–2%"
+        if d <= 5.0:     return "2–5%"
+        return ">5%"
+
+    bucket_order = ["<0.25%", "0.25–0.5%", "0.5–1%", "1–2%", "2–5%", ">5%", "no level"]
+    bucket_data: dict[str, dict] = defaultdict(
+        lambda: {"n_w": 0, "n_l": 0, "pnl_w": 0.0, "pnl_l": 0.0, "rois": []}
+    )
+    for c in enriched:
+        key = _bucket(c["nearest_dist_pct"])
+        if c["is_winner"]:
+            bucket_data[key]["n_w"] += 1
+            bucket_data[key]["pnl_w"] += c["realized_pnl"]
+        else:
+            bucket_data[key]["n_l"] += 1
+            bucket_data[key]["pnl_l"] += c["realized_pnl"]
+        if c.get("actual_pct") is not None:
+            bucket_data[key]["rois"].append(c["actual_pct"])
+
+    buckets = []
+    for b in bucket_order:
+        if b not in bucket_data:
+            continue
+        d = bucket_data[b]
+        total = d["n_w"] + d["n_l"]
+        net = round(d["pnl_w"] + d["pnl_l"], 0)
+        buckets.append({
+            "label":      b,
+            "n_winners":  d["n_w"],
+            "n_losers":   d["n_l"],
+            "total":      total,
+            "win_rate":   round(d["n_w"] / total * 100, 1) if total else None,
+            "median_roi": round(median(d["rois"]), 1) if d["rois"] else None,
+            "net_pnl":    net,
+        })
+
+    # ── Aggregate medians ─────────────────────────────────────────────
+    def _med(seq):
+        vals = [x for x in seq if x is not None]
+        return round(median(vals), 2) if vals else None
+
+    summary = {
+        "median_dist_above_losers":  _med(c["dist_above_pct"] for c in losers),
+        "median_dist_below_losers":  _med(c["dist_below_pct"] for c in losers),
+        "median_dist_nearest_losers":_med(c["nearest_dist_pct"] for c in losers),
+        "median_dist_above_winners": _med(c["dist_above_pct"] for c in winners),
+        "median_dist_below_winners": _med(c["dist_below_pct"] for c in winners),
+        "median_dist_nearest_winners":_med(c["nearest_dist_pct"] for c in winners),
+        "total_loss":  round(sum(c["realized_pnl"] for c in losers), 0),
+        "total_win":   round(sum(c["realized_pnl"] for c in winners), 0),
+    }
+
+    return {
+        "n_total":       len(enriched),
+        "n_losers":      len(losers),
+        "n_winners":     len(winners),
+        "proximity_pct": proximity_pct,
+        "summary":       summary,
+        "buckets":       buckets,
+        "losers":        losers,
+    }

@@ -1693,6 +1693,7 @@ async def analytics_levels(
             "range_key":    rng,
             "proximity":    prox,
             "data":         _a.levels_analysis(range_key=rng, proximity_pct=prox),
+            "losers_data":  _a.loser_levels_analysis(range_key=rng, proximity_pct=prox),
             **nav_context(),
         },
     )
