@@ -35,6 +35,7 @@ import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -42,19 +43,41 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from automation import state
+from automation import secrets as user_secrets
 from src import bars_store
 from src.contract_symbols import build_occ_symbol
 from src.polygon_client import PolygonClient, PolygonError
 
+# Load API keys saved via Settings → API keys into the environment so
+# PolygonClient() can pick up POLYGON_API_KEY when the script is run
+# directly (the server does this on startup, but the script doesn't
+# import the server).
+user_secrets.load_into_env()
+
+
+# Broker CSVs (TD Ameritrade orderStatus, IBKR TRANSACTIONS) emit timestamps
+# in US/Eastern local time without a tz suffix. The importer stores those
+# strings as-is. We must localize them to ET before comparing against the
+# Polygon bar timestamps (which are UTC epoch ms).
+_ET = ZoneInfo("America/New_York")
+
 
 def _parse_ts(s: str) -> datetime | None:
-    """Parse 'YYYY-MM-DDTHH:MM:SS' (the importer's canonical format)."""
+    """Parse 'YYYY-MM-DDTHH:MM:SS' (the importer's canonical format).
+
+    Returns a tz-aware datetime localized to US/Eastern. Naive input is
+    assumed to be ET (broker local time); anything that already carries a
+    tzinfo is left alone.
+    """
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s[:19])
+        dt = datetime.fromisoformat(s[:19])
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_ET)
+    return dt
 
 
 def _expiry_date(s: str) -> date | None:
@@ -84,17 +107,29 @@ def _closed_trades_needing_backfill(conn, force: bool, limit: int | None):
     return conn.execute(q).fetchall()
 
 
+def _to_epoch_ms(dt: datetime) -> int:
+    """Convert any datetime to UTC epoch milliseconds. Naive datetimes are
+    interpreted as ET (the broker timezone)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_ET)
+    return int(dt.timestamp() * 1000)
+
+
 def _slice_max_min(bars_df, start_ts: datetime, end_ts: datetime):
-    """Return (max_high, min_low) within [start_ts, end_ts] inclusive."""
+    """Return (max_high, min_low) within [start_ts, end_ts] inclusive.
+
+    Both timestamps must be tz-aware (or naive ET — we coerce in
+    _to_epoch_ms). The bars frame's 't' column is UTC epoch ms.
+    """
     if bars_df.empty:
         return None, None
     if start_ts is None or end_ts is None:
         return None, None
     if end_ts < start_ts:
         return None, None
-    # bars_store writes 't' as UTC ms; convert to naive UTC datetimes for compare.
-    mask = (bars_df["t"] >= int(start_ts.replace(tzinfo=timezone.utc).timestamp() * 1000)) & \
-           (bars_df["t"] <= int(end_ts.replace(tzinfo=timezone.utc).timestamp() * 1000))
+    start_ms = _to_epoch_ms(start_ts)
+    end_ms   = _to_epoch_ms(end_ts)
+    mask = (bars_df["t"] >= start_ms) & (bars_df["t"] <= end_ms)
     slc = bars_df[mask]
     if slc.empty:
         return None, None
@@ -145,10 +180,21 @@ def main(argv=None) -> int:
             continue
 
         first_entry = _parse_ts(r["first_entry_ts"] or r["created_at"])
-        last_exit   = _parse_ts(r["last_exit_ts"]) or first_entry
+        last_exit   = _parse_ts(r["last_exit_ts"])  # None if no exit fill
         if first_entry is None:
             skipped_invalid += 1
             continue
+
+        # A trade with no exit fill that's past expiry expired worthless —
+        # the "in trade" window was effectively [entry, expiry close].
+        # Falling back to first_entry (zero-width window) leaves MFE/MAE
+        # null for these forever; using expiry close lets us recover
+        # meaningful values. For trades whose expiry is still in the
+        # future we leave last_exit None — they're genuinely still open.
+        if last_exit is None and exp < date.today():
+            last_exit = datetime.combine(
+                exp, datetime.min.time(), tzinfo=_ET,
+            ) + timedelta(hours=16)
 
         from_d = first_entry.date()
         # Always reach expiry to cover the to-expiry MFE/MAE window.
@@ -210,6 +256,8 @@ def main(argv=None) -> int:
     # ──────────────────────────────────────────────────────────────
     updated = 0
     no_bars = 0
+    no_exit = 0       # trades with no exit fill yet — in-trade window undefined
+    empty_slice = 0   # bars exist but window slice is empty
     with sqlite3.connect(state.DB_PATH) as conn:
         for occ, meta in contracts.items():
             df = bars_store.load_option_bars(occ)
@@ -217,10 +265,27 @@ def main(argv=None) -> int:
                 no_bars += len(meta["trade_rows"])
                 continue
             for tr in meta["trade_rows"]:
-                in_max, in_min = _slice_max_min(df, tr["first_entry"], tr["last_exit"])
-                # To-expiry window ends at expiry's market close (4pm ET ~ 20:00 UTC).
-                exp_end = datetime.combine(tr["expiry"], datetime.min.time()) + timedelta(hours=20)
+                # No exit yet → can still compute to-expiry (entry → expiry close)
+                # but the in-trade window is undefined. Use entry alone so the
+                # mask is empty rather than spuriously large.
+                if tr["last_exit"] is None:
+                    in_max, in_min = None, None
+                    no_exit += 1
+                else:
+                    in_max, in_min = _slice_max_min(df, tr["first_entry"], tr["last_exit"])
+
+                # To-expiry window ends at expiry's market close (4pm ET).
+                # ZoneInfo handles DST so we don't have to track summer/winter.
+                exp_end = datetime.combine(
+                    tr["expiry"], datetime.min.time(), tzinfo=_ET,
+                ) + timedelta(hours=16)
                 exp_max, exp_min = _slice_max_min(df, tr["first_entry"], exp_end)
+
+                # Track empty-slice cases for diagnostics
+                if (in_max is None and tr["last_exit"] is not None
+                        and exp_max is None):
+                    empty_slice += 1
+
                 conn.execute("""
                     UPDATE trade_intents
                     SET mfe_in_trade_price  = COALESCE(?, mfe_in_trade_price),
@@ -235,7 +300,12 @@ def main(argv=None) -> int:
 
     print()
     print(f"contracts:  fetched={fetched}  cached={cached}  errors={errors}")
-    print(f"trades:     updated={updated}  no_bars={no_bars}")
+    print(
+        f"trades:     updated={updated}  no_bars={no_bars}  "
+        f"no_exit_fill={no_exit}  empty_window={empty_slice}"
+    )
+    if no_exit:
+        print(f"  ({no_exit} trade(s) have no exit fill yet — re-import after closing)")
     return 0 if errors == 0 else 2
 
 
