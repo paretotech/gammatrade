@@ -85,6 +85,115 @@
     {% endif %}
 </div>
 
+{# ─── Stop-discipline breakdowns ──────────────────────────────────── #}
+{% if discipline.n > 0 %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+
+    {# Helper: row template re-used for ticker / hour / DTE rollups. The
+       progress bar visualizes the recovered-to-entry rate (worse = more red). #}
+    {% macro breakdown_row(label, n, pct, giveback) -%}
+        <tr class="hover:bg-stone-50">
+            <td class="py-1.5 pl-3 mono font-medium">{{ label }}</td>
+            <td class="py-1.5 text-right text-stone-500 text-[11px]">{{ n }}</td>
+            <td class="py-1.5 px-2">
+                <div class="flex items-center gap-1.5">
+                    <div class="flex-1 h-1.5 bg-stone-100 rounded overflow-hidden">
+                        <div class="h-full
+                            {% if pct >= 60 %}bg-red-500
+                            {% elif pct >= 40 %}bg-amber-500
+                            {% else %}bg-emerald-500{% endif %}"
+                            style="width: {{ pct }}%"></div>
+                    </div>
+                    <span class="mono text-[11px] tabular-nums w-9 text-right
+                        {% if pct >= 60 %}text-red-700
+                        {% elif pct >= 40 %}text-amber-700
+                        {% else %}text-emerald-700{% endif %}">
+                        {{ pct }}%
+                    </span>
+                </div>
+            </td>
+            <td class="py-1.5 pr-3 mono text-right text-[11px]
+                {% if giveback >= 20 %}text-amber-700 font-medium{% else %}text-stone-500{% endif %}">
+                +{{ giveback }}%
+            </td>
+        </tr>
+    {%- endmacro %}
+
+    {# By ticker — worst recovery rate first #}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 border-b border-stone-200 flex items-baseline justify-between">
+            <h3 class="text-[12px] font-semibold text-stone-700 uppercase tracking-wider">By ticker</h3>
+            <span class="text-[10px] text-stone-400">≥2 stops · worst first</span>
+        </div>
+        {% if discipline.by_ticker %}
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500">
+                <tr>
+                    <th class="text-left  pl-3 py-1 font-medium">Ticker</th>
+                    <th class="text-right py-1 font-medium">N</th>
+                    <th class="text-left  px-2 py-1 font-medium">Recovered ↑</th>
+                    <th class="text-right pr-3 py-1 font-medium">Giveback</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+            {% for r in discipline.by_ticker %}
+                {{ breakdown_row(r.key, r.n, r.pct_recovered_to_entry, r.median_giveback_pct) }}
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-[11px] text-stone-400 text-center py-6">No tickers with ≥2 stops.</p>
+        {% endif %}
+    </div>
+
+    {# By hour of day (ET) #}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 border-b border-stone-200 flex items-baseline justify-between">
+            <h3 class="text-[12px] font-semibold text-stone-700 uppercase tracking-wider">By hour (ET)</h3>
+            <span class="text-[10px] text-stone-400">stop fill time</span>
+        </div>
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500">
+                <tr>
+                    <th class="text-left  pl-3 py-1 font-medium">Hour</th>
+                    <th class="text-right py-1 font-medium">N</th>
+                    <th class="text-left  px-2 py-1 font-medium">Recovered ↑</th>
+                    <th class="text-right pr-3 py-1 font-medium">Giveback</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+            {% for r in discipline.by_hour %}
+                {{ breakdown_row(r.label, r.n, r.pct_recovered_to_entry, r.median_giveback_pct) }}
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {# By DTE bucket #}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 border-b border-stone-200 flex items-baseline justify-between">
+            <h3 class="text-[12px] font-semibold text-stone-700 uppercase tracking-wider">By DTE</h3>
+            <span class="text-[10px] text-stone-400">days-to-expiry at entry</span>
+        </div>
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500">
+                <tr>
+                    <th class="text-left  pl-3 py-1 font-medium">DTE</th>
+                    <th class="text-right py-1 font-medium">N</th>
+                    <th class="text-left  px-2 py-1 font-medium">Recovered ↑</th>
+                    <th class="text-right pr-3 py-1 font-medium">Giveback</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+            {% for r in discipline.by_dte %}
+                {{ breakdown_row(r.key, r.n, r.pct_recovered_to_entry, r.median_giveback_pct) }}
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
 {# ─── MFE-vs-realized scatter ──────────────────────────────────────── #}
 <div class="bg-white border border-stone-200 rounded-lg p-5 mb-6"
      x-data='leakageScatter({{ scatter | tojson }})'

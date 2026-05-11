@@ -1260,6 +1260,17 @@ def stop_discipline(range_key: str = "all",
             refs  = [v for v in (entry_price, prev_tp_price) if v is not None]
             floor = max(refs) if refs else None
             if floor is not None and price < floor:
+                # DTE at stop = days from entry day to expiry. We bucket
+                # it later into 0 / 1–2 / 3–7 / 8+ for the rollup.
+                dte = None
+                try:
+                    fe = t.get("first_entry_ts")
+                    if fe and t.get("expiry"):
+                        d_entry  = date.fromisoformat(fe[:10])
+                        d_expiry = date.fromisoformat(str(t["expiry"])[:10])
+                        dte = (d_expiry - d_entry).days
+                except (TypeError, ValueError):
+                    pass
                 stops.append({
                     "intent_id":   t["intent_id"],
                     "ticker":      t["ticker"],
@@ -1270,6 +1281,7 @@ def stop_discipline(range_key: str = "all",
                     "stop_price":  price,
                     "entry_price": entry_price,
                     "floor":       floor,
+                    "dte":         dte,
                 })
             elif f["tp_tier"]:
                 prev_tp_price = price
@@ -1328,7 +1340,65 @@ def stop_discipline(range_key: str = "all",
             "n":                   0,
             "lookback_minutes":    lookback_minutes,
             "recent":              [],
+            "by_ticker":           [],
+            "by_hour":             [],
+            "by_dte":              [],
         }
+
+    def _bucket_stats(rs: list[dict]) -> dict:
+        nb = len(rs)
+        return {
+            "n":                      nb,
+            "pct_recovered_to_entry": round(
+                sum(1 for r in rs if r["recovered_to_entry"]) / nb * 100, 1),
+            "pct_recovered_to_floor": round(
+                sum(1 for r in rs if r["recovered_to_floor"]) / nb * 100, 1),
+            "median_giveback_pct":    round(
+                median(r["giveback_pct"] for r in rs), 1),
+            "median_mins_to_peak":    round(
+                median(r["mins_to_peak"] for r in rs), 1),
+        }
+
+    # By ticker — only show tickers with ≥2 stops so single noisy samples
+    # don't dominate. Sorted worst-first (highest recovered-to-entry %).
+    by_ticker_map: dict[str, list[dict]] = defaultdict(list)
+    for r in results:
+        by_ticker_map[r["ticker"]].append(r)
+    by_ticker = [
+        {"key": k, **_bucket_stats(v)}
+        for k, v in by_ticker_map.items() if len(v) >= 2
+    ]
+    by_ticker.sort(key=lambda x: (-x["pct_recovered_to_entry"], -x["n"]))
+
+    # By hour-of-day (ET). 9-15 cover RTH. Sort by hour for natural order.
+    by_hour_map: dict[int, list[dict]] = defaultdict(list)
+    for r in results:
+        dt = _parse_et_ts(r["stop_ts"])
+        if dt is None:
+            continue
+        by_hour_map[dt.hour].append(r)
+    by_hour = [
+        {"key": h, "label": f"{h:02d}:00", **_bucket_stats(v)}
+        for h, v in sorted(by_hour_map.items())
+    ]
+
+    # By DTE bucket — 0 / 1–2 / 3–7 / 8+. Useful for finding the DTE
+    # bucket where your stops most often fire too early (typically 0DTE).
+    def _dte_label(d):
+        if d is None:    return "Unknown"
+        if d == 0:       return "0DTE"
+        if d <= 2:       return "1–2"
+        if d <= 7:       return "3–7"
+        return "8+"
+    by_dte_map: dict[str, list[dict]] = defaultdict(list)
+    for r in results:
+        by_dte_map[_dte_label(r.get("dte"))].append(r)
+    # Keep a stable order regardless of which buckets are non-empty.
+    _dte_order = ["0DTE", "1–2", "3–7", "8+", "Unknown"]
+    by_dte = [
+        {"key": k, **_bucket_stats(by_dte_map[k])}
+        for k in _dte_order if k in by_dte_map
+    ]
 
     return {
         "n":                       n,
@@ -1344,6 +1414,9 @@ def stop_discipline(range_key: str = "all",
             median(r["giveback_pct"] for r in results), 1),
         "avg_giveback_pct":        round(
             sum(r["giveback_pct"] for r in results) / n, 1),
+        "by_ticker": by_ticker,
+        "by_hour":   by_hour,
+        "by_dte":    by_dte,
         # 20 most recent stops for the detail table.
         "recent": sorted(results, key=lambda r: r["stop_ts"], reverse=True)[:20],
     }
