@@ -1190,6 +1190,17 @@ async def analytics_trades(
         tag_index.setdefault(r["intent_id"], []).append(r["tag"])
     for t in trades:
         t["tags"] = tag_index.get(t["intent_id"], [])
+        # DTE at entry — for the filter dropdown
+        try:
+            fe = t.get("first_entry_ts")
+            exp = t.get("expiry")
+            if fe and exp:
+                t["dte"] = (date.fromisoformat(str(exp)[:10])
+                            - date.fromisoformat(fe[:10])).days
+            else:
+                t["dte"] = None
+        except (ValueError, TypeError):
+            t["dte"] = None
 
     return TEMPLATES.TemplateResponse(
         "analytics_trades.html",
