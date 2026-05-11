@@ -1645,6 +1645,30 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
     )
 
 
+@app.get("/analytics/winners", response_class=HTMLResponse)
+async def analytics_winners(
+    request: Request,
+    range: Optional[str] = None,
+) -> HTMLResponse:
+    """Winner profile — side-by-side comparison of winners vs losers
+    (and top-quartile vs bottom-quartile by realized %) across every
+    per-trade feature we have."""
+    from . import analytics as _a
+    rng = _norm_range(range)
+    return TEMPLATES.TemplateResponse(
+        "analytics_winners.html",
+        {
+            "request":    request,
+            "page_title": "Analytics",
+            "active_tab": "winners",
+            "tab_slug":   "winners",
+            "range_key":  rng,
+            "data":       _a.winner_profile(range_key=rng),
+            **nav_context(),
+        },
+    )
+
+
 @app.get("/analytics/levels", response_class=HTMLResponse)
 async def analytics_levels(
     request: Request,

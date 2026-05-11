@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+{# Side-by-side comparison of winners vs losers (binary) and top-quartile vs
+   bottom-quartile (by realized %), across every per-trade feature we track.
+
+   The Δ columns are the headline — they're where the eye should land.
+   A big absolute Δ means winners and losers diverge on this feature;
+   the dimension is genuinely separating. Small Δ → noise / no edge. #}
+
+<div class="mb-6">
+    <h2 class="text-[15px] font-semibold text-stone-700">Winner profile</h2>
+    <p class="text-[12px] text-stone-500 mt-0.5">
+        What distinguishes winning trades from losing ones, across every
+        feature the system tracks. Δ columns flag the biggest separators.
+    </p>
+</div>
+
+{# ─── Cohort summary cards ─────────────────────────────────────────── #}
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Closed trades</div>
+        <div class="mono font-semibold text-xl text-stone-900">{{ data.n_total }}</div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">
+            total P&amp;L
+            <span class="{% if data.total_pnl > 0 %}text-emerald-600{% else %}text-red-600{% endif %}">
+                {% if data.total_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(data.total_pnl) }}
+            </span>
+        </div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Winners (binary)</div>
+        <div class="mono font-semibold text-xl text-emerald-700">{{ data.n_winners }}</div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">
+            <span class="text-emerald-600">+${{ "%.0f"|format(data.winners_pnl) }}</span>
+            · {{ (data.n_winners / data.n_total * 100) | round | int }}% WR
+        </div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Losers (binary)</div>
+        <div class="mono font-semibold text-xl text-red-700">{{ data.n_losers }}</div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">
+            <span class="text-red-600">${{ "%.0f"|format(data.losers_pnl) }}</span>
+        </div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Quartile size</div>
+        <div class="mono font-semibold text-xl text-stone-900">{{ data.n_top_q }}</div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">
+            top-Q &amp; bottom-Q each
+        </div>
+    </div>
+</div>
+
+{# ─── Big comparison table ────────────────────────────────────────── #}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">Feature-by-feature comparison</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            Left half — winners vs losers (binary on realized P&amp;L).
+            Right half — top-quartile vs bottom-quartile (by realized %).
+            Quartile splits often surface clearer signals because they cut out
+            marginal trades near breakeven.
+        </p>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium">Dimension</th>
+                <th class="text-right py-2 font-medium">Winners</th>
+                <th class="text-right py-2 font-medium">Losers</th>
+                <th class="text-right py-2 font-medium border-r border-stone-200 pr-3">Δ W-L</th>
+                <th class="text-right pl-3 py-2 font-medium">Top-Q</th>
+                <th class="text-right py-2 font-medium">Bot-Q</th>
+                <th class="text-right pr-5 py-2 font-medium">Δ T-B</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in data.rows %}
+            {# Classify delta magnitude to drive emphasis. Numeric deltas
+               (minutes, days) and pct-point deltas have different scales,
+               so use the raw value with unit-specific thresholds. #}
+            {% set wl_abs = (r.delta_wl_raw or 0) | abs %}
+            {% set tb_abs = (r.delta_tb_raw or 0) | abs %}
+            {% set wl_strong = (r.unit in ['pct_pt', 'pct'] and wl_abs >= 10)
+                            or (r.unit == 'min' and wl_abs >= 30)
+                            or (r.unit == 'hour' and wl_abs >= 0.5)
+                            or (r.unit == 'day' and wl_abs >= 2) %}
+            {% set tb_strong = (r.unit in ['pct_pt', 'pct'] and tb_abs >= 15)
+                            or (r.unit == 'min' and tb_abs >= 60)
+                            or (r.unit == 'hour' and tb_abs >= 1)
+                            or (r.unit == 'day' and tb_abs >= 2) %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2">{{ r.label }}</td>
+                <td class="py-2 mono text-right text-stone-800">{{ r.winners }}</td>
+                <td class="py-2 mono text-right text-stone-800">{{ r.losers }}</td>
+                <td class="py-2 mono text-right pr-3 border-r border-stone-200
+                    {% if wl_strong %}font-semibold{% endif %}
+                    {% if r.delta_wl_raw is not none and r.delta_wl_raw > 0 %}text-emerald-700
+                    {% elif r.delta_wl_raw is not none and r.delta_wl_raw < 0 %}text-red-700
+                    {% else %}text-stone-400{% endif %}">
+                    {{ r.delta_wl }}
+                </td>
+                <td class="pl-3 py-2 mono text-right text-stone-800">{{ r.top_q }}</td>
+                <td class="py-2 mono text-right text-stone-800">{{ r.bottom_q }}</td>
+                <td class="py-2 mono text-right pr-5
+                    {% if tb_strong %}font-semibold{% endif %}
+                    {% if r.delta_tb_raw is not none and r.delta_tb_raw > 0 %}text-emerald-700
+                    {% elif r.delta_tb_raw is not none and r.delta_tb_raw < 0 %}text-red-700
+                    {% else %}text-stone-400{% endif %}">
+                    {{ r.delta_tb }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<p class="text-[11px] text-stone-400 mt-3 leading-relaxed max-w-3xl">
+    Deltas are signed differences in the row's native unit (minutes, days,
+    percentage points). Direction itself doesn't say "good" or "bad" — the
+    color marks <em>which cohort is higher</em>: green = winners/top-Q higher,
+    red = losers/bottom-Q higher. Bold cells flag deltas that are large
+    enough to be meaningful (≥10pt for percentages, ≥30m hold time, ≥0.5h
+    entry-time, ≥2d for DTE).
+</p>
+
+{% endblock %}

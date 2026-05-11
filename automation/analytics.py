@@ -1690,3 +1690,259 @@ def levels_analysis(range_key: str = "all",
         "ath_break":      ath_summary,
         "ath_recent":     ath_recent,
     }
+
+
+# ─── Winner profile ───────────────────────────────────────────────────────
+# A single rollup that compares winning vs losing trades (and top-quartile
+# vs bottom-quartile by realized %) across every feature we have:
+# entry time, hold time, DTE, distance to nearest level, level bucket,
+# pregame coverage/verdict, 0DTE flag, TP1 hit rate, first-trade-of-day.
+
+def _winner_extract_entry_hour(t) -> Optional[float]:
+    ts = t.get("first_entry_ts")
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts[:19])
+    except ValueError:
+        return None
+    return dt.hour + dt.minute / 60.0
+
+
+def _winner_hold_minutes(t) -> Optional[float]:
+    e, x = t.get("first_entry_ts"), t.get("last_exit_ts")
+    if not e or not x:
+        return None
+    try:
+        return (datetime.fromisoformat(x[:19])
+                - datetime.fromisoformat(e[:19])).total_seconds() / 60
+    except ValueError:
+        return None
+
+
+def _winner_dte(t) -> Optional[int]:
+    e, exp = t.get("first_entry_ts"), t.get("expiry")
+    if not e or not exp:
+        return None
+    try:
+        return (date.fromisoformat(str(exp)[:10])
+                - date.fromisoformat(e[:10])).days
+    except (ValueError, TypeError):
+        return None
+
+
+def _winner_pregame_lookup(date_str: str, _cache: dict) -> Optional[dict]:
+    if date_str in _cache:
+        return _cache[date_str]
+    from . import analysis as _anl
+    res = _anl.get_cached(date_str)
+    if res and res.get("status") == "ok":
+        _cache[date_str] = res.get("analysis") or {}
+    else:
+        _cache[date_str] = None
+    return _cache[date_str]
+
+
+def _agg(values: list, kind: str) -> Optional[float]:
+    """median (numeric values) or pct_true (booleans) — None when empty."""
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    if kind == "median":
+        return float(median(vals))
+    if kind == "pct_true":
+        n = len(vals)
+        true_n = sum(1 for v in vals if bool(v))
+        return round(true_n / n * 100, 1) if n else None
+    raise ValueError(f"unknown agg kind {kind!r}")
+
+
+def _fmt_winner_cell(value: Optional[float], unit: str) -> str:
+    if value is None:
+        return "—"
+    if unit == "hour":   # e.g. 10.5 → "10:30"
+        h = int(value); m = int(round((value - h) * 60))
+        if m == 60:
+            h += 1; m = 0
+        return f"{h:02d}:{m:02d}"
+    if unit == "min":
+        return f"{int(round(value))}m"
+    if unit == "day":
+        return f"{int(round(value))}d"
+    if unit == "pct":
+        return f"{value:.1f}%"
+    if unit == "pct_pt":
+        return f"{value:.0f}%"
+    return f"{value:.1f}"
+
+
+def _fmt_delta(d: Optional[float], unit: str) -> str:
+    if d is None:
+        return "—"
+    sign = "+" if d > 0 else ""   # negative numbers carry their own minus
+    if unit == "hour":
+        # delta in hours → show in mins
+        mins = round(d * 60)
+        return f"{'+' if mins > 0 else ''}{mins}m"
+    if unit == "min":
+        return f"{sign}{int(round(d))}m"
+    if unit == "day":
+        return f"{sign}{int(round(d))}d"
+    if unit == "pct":
+        return f"{sign}{d:.1f}pt"
+    if unit == "pct_pt":
+        return f"{sign}{d:.0f}pt"
+    return f"{sign}{d:.1f}"
+
+
+def winner_profile(range_key: str = "all",
+                   proximity_pct: float = 0.5) -> dict:
+    """Compare winners vs losers (and top-Q vs bottom-Q by realized %)
+    across every per-trade feature we have."""
+    trades = closed_trades(limit=5000, range_key=range_key)
+
+    # Enrich each trade with level classification + computed features.
+    pregame_cache: dict = {}
+    classified: list[dict] = []
+    for t in trades:
+        entry_ts = t.get("first_entry_ts")
+        ticker   = t.get("ticker")
+
+        # Level bucket + nearest distance (re-using the same logic as
+        # levels_analysis; cheap to redo)
+        under = _underlying_price_at(ticker, entry_ts) if entry_ts else None
+        snap  = _active_levels_at(ticker, entry_ts)   if entry_ts else None
+        if under is not None and snap is not None and (snap.levels_above or snap.levels_below):
+            cls = _classify_position(under, snap, proximity_pct)
+            bucket    = cls["bucket"]
+            nearest_d = None
+            if cls["dist_above_pct"] is not None:
+                nearest_d = cls["dist_above_pct"]
+            if cls["dist_below_pct"] is not None and (
+                nearest_d is None or cls["dist_below_pct"] < nearest_d
+            ):
+                nearest_d = cls["dist_below_pct"]
+        else:
+            bucket    = None
+            nearest_d = None
+
+        # Pregame coverage — has a pregame analysis on entry day that names
+        # this ticker? What's the verdict if yes?
+        pregame_named  = False
+        pregame_like   = False
+        if entry_ts:
+            pg = _winner_pregame_lookup(entry_ts[:10], pregame_cache)
+            if pg:
+                picks = pg.get("picks") or []
+                for p in picks:
+                    if (p.get("ticker") or "").upper() == (ticker or "").upper():
+                        pregame_named = True
+                        pregame_like  = (p.get("verdict") == "LIKE")
+                        break
+
+        classified.append({
+            **t,
+            "_entry_hour":     _winner_extract_entry_hour(t),
+            "_hold_minutes":   _winner_hold_minutes(t),
+            "_dte":            _winner_dte(t),
+            "_bucket":         bucket,
+            "_dist_pct":       nearest_d,
+            "_pregame_named":  pregame_named,
+            "_pregame_like":   pregame_like,
+            "_is_0dte":        (_winner_dte(t) == 0) if _winner_dte(t) is not None else None,
+            # Price-based, not broker-tag-based — the broker tags some stops
+            # as TP1 even when they print below entry, which inflates the
+            # tag-based TP1-hit measure. Use first_exit_profitable instead
+            # (first exit fill at a higher price than avg entry).
+            "_first_exit_win": bool(t.get("first_exit_profitable")),
+            "_is_index":       (t.get("ticker") or "").upper() in ("QQQ", "SPY", "SPX", "IWM"),
+        })
+
+    # First-trade-of-day flag — needs the full set in hand.
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for c in classified:
+        ts = c.get("first_entry_ts")
+        if ts:
+            by_date[ts[:10]].append(c)
+    for d, day_trades in by_date.items():
+        if not day_trades:
+            continue
+        earliest = min(day_trades, key=lambda x: x.get("first_entry_ts") or "")
+        for c in day_trades:
+            c["_first_of_day"] = (c["intent_id"] == earliest["intent_id"])
+    for c in classified:
+        c.setdefault("_first_of_day", None)
+
+    # ── Cohort splits ─────────────────────────────────────────────────
+    winners = [c for c in classified if (c.get("realized_pnl") or 0) > 0]
+    losers  = [c for c in classified if (c.get("realized_pnl") or 0) <= 0]
+
+    # Top/bottom quartile by realized %
+    have_pct = [c for c in classified if c.get("actual_pct") is not None]
+    have_pct.sort(key=lambda c: c["actual_pct"])
+    q = max(1, len(have_pct) // 4)
+    bottom_q = have_pct[:q]
+    top_q    = have_pct[-q:]
+
+    # ── Dimensions ────────────────────────────────────────────────────
+    # Each row pulls a value from each cohort and formats it.
+    DIMENSIONS = [
+        # (label, field, agg, unit)
+        ("Entry hour (median)",            "_entry_hour",    "median",   "hour"),
+        ("Time in trade (median)",         "_hold_minutes",  "median",   "min"),
+        ("DTE at entry (median)",          "_dte",           "median",   "day"),
+        ("Distance to nearest level",      "_dist_pct",      "median",   "pct"),
+        ("ATH-break entries",              "_bucket",        "ath",      "pct_pt"),
+        ("Near-resistance entries",        "_bucket",        "near_res", "pct_pt"),
+        ("Near-support entries",           "_bucket",        "near_sup", "pct_pt"),
+        ("Mid-range entries",              "_bucket",        "mid",      "pct_pt"),
+        ("Index name (QQQ/SPY/SPX/IWM)",   "_is_index",      "pct_true", "pct_pt"),
+        ("0DTE entries",                   "_is_0dte",       "pct_true", "pct_pt"),
+        ("First exit profitable",          "_first_exit_win","pct_true", "pct_pt"),
+        ("First trade of the day",         "_first_of_day",  "pct_true", "pct_pt"),
+        ("Pregame mention",                "_pregame_named", "pct_true", "pct_pt"),
+        ("Pregame verdict LIKE",           "_pregame_like",  "pct_true", "pct_pt"),
+    ]
+
+    def cohort_val(cohort, field, agg):
+        # Bucket-derived agg keys roll up boolean membership of a class.
+        if agg.startswith("ath") or agg.startswith("near") or agg.startswith("mid"):
+            wanted = {"ath": "ath_break", "near_res": "near_resistance",
+                      "near_sup": "near_support", "mid": "mid_range"}[agg]
+            flags = [c.get(field) == wanted for c in cohort if c.get(field) is not None]
+            return _agg(flags, "pct_true")
+        return _agg([c.get(field) for c in cohort], agg)
+
+    rows = []
+    for label, field, agg, unit in DIMENSIONS:
+        w  = cohort_val(winners, field, agg)
+        l  = cohort_val(losers,  field, agg)
+        tq = cohort_val(top_q,   field, agg)
+        bq = cohort_val(bottom_q,field, agg)
+        delta_wl = None if (w is None or l is None) else (w - l)
+        delta_tb = None if (tq is None or bq is None) else (tq - bq)
+        rows.append({
+            "label":         label,
+            "winners":       _fmt_winner_cell(w,  unit),
+            "losers":        _fmt_winner_cell(l,  unit),
+            "delta_wl":      _fmt_delta(delta_wl, unit),
+            "delta_wl_raw":  delta_wl,
+            "top_q":         _fmt_winner_cell(tq, unit),
+            "bottom_q":      _fmt_winner_cell(bq, unit),
+            "delta_tb":      _fmt_delta(delta_tb, unit),
+            "delta_tb_raw":  delta_tb,
+            "unit":          unit,
+        })
+
+    return {
+        "range_key":   range_key,
+        "n_total":     len(classified),
+        "n_winners":   len(winners),
+        "n_losers":    len(losers),
+        "n_top_q":     len(top_q),
+        "n_bottom_q":  len(bottom_q),
+        "total_pnl":   round(sum(c.get("realized_pnl") or 0 for c in classified), 0),
+        "winners_pnl": round(sum(c.get("realized_pnl") or 0 for c in winners), 0),
+        "losers_pnl":  round(sum(c.get("realized_pnl") or 0 for c in losers), 0),
+        "rows":        rows,
+    }
