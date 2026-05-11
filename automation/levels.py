@@ -1,5 +1,9 @@
 """Support/resistance level management.
 
+Also see `parse_pasted_levels()` at the bottom — turns the chartist's
+copy-paste format into LevelSnapshot rows ready for upsert. The
+Settings → Levels paste box is the primary daily-update surface.
+
 Stores per-ticker key price levels (sourced from a chartist's snapshots
 or hand-edited) in the `ticker_levels` SQLite table. Multiple snapshots
 per ticker are retained so we can see how levels evolved over time;
@@ -242,3 +246,107 @@ def import_csv(csv_path: Path, path: Path = state.DB_PATH) -> dict:
                 skipped += 1
         conn.commit()
     return {"rows_in": rows_in, "inserted": inserted, "skipped": skipped}
+
+
+# ─── Paste-format parser ─────────────────────────────────────────────────
+import re as _re
+
+# Match one ticker block. Tolerant to:
+#   - Any whitespace between ticker and "(Current Price: ..."
+#   - Optional "$" before the price
+#   - "Levels Below:" / "Levels Above:" labels (case-insensitive)
+#   - Brackets [] OR plain comma-separated list with no brackets
+#   - Trailing or leading whitespace on each line
+_TICKER_LINE = _re.compile(
+    r"^\s*([A-Z][A-Z0-9.]{0,9})\s*\(\s*Current Price\s*:?\s*\$?\s*([\d.]+)\s*\)",
+    _re.IGNORECASE,
+)
+_BELOW_LINE = _re.compile(
+    r"^\s*Levels?\s*Below\s*:?\s*\[?([0-9.,\s]+?)\]?\s*$",
+    _re.IGNORECASE,
+)
+_ABOVE_LINE = _re.compile(
+    r"^\s*Levels?\s*Above\s*:?\s*\[?([0-9.,\s]+?)\]?\s*$",
+    _re.IGNORECASE,
+)
+
+
+def _split_levels(raw: str) -> list[float]:
+    """Parse '270.02, 274.33, 277.33' (with optional brackets) → [float, ...]."""
+    out = []
+    for tok in raw.replace(";", ",").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            out.append(float(tok))
+        except ValueError:
+            continue
+    return out
+
+
+def parse_pasted_levels(text: str,
+                        asof_ts: Optional[str] = None,
+                        source: str = "manual") -> list[LevelSnapshot]:
+    """Parse one OR many ticker blocks from pasted text.
+
+    Format per block (3 lines, in any order for Below/Above):
+        AAPL  (Current Price: $291.10)
+        Levels Below: [270.02, 274.33, 277.33, 282.54, 288.72]
+        Levels Above: [293.86, 300.01, 310.58, 315.16, 318.09]
+
+    Multiple blocks may be pasted at once, separated by blank lines or
+    just back-to-back. Each ticker line starts a new block; if a later
+    block omits Levels Below or Above the missing side is left empty.
+    Returns the parsed LevelSnapshot list (NOT persisted — caller upserts).
+    """
+    asof_ts = asof_ts or datetime.now().isoformat(timespec="seconds")
+
+    blocks: list[dict] = []
+    current: Optional[dict] = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        m = _TICKER_LINE.match(line)
+        if m:
+            # Start a new block. Push the prior one if it has any data.
+            if current is not None:
+                blocks.append(current)
+            current = {
+                "ticker":        m.group(1).upper(),
+                "current_price": float(m.group(2)),
+                "below":         [],
+                "above":         [],
+            }
+            continue
+
+        if current is None:
+            continue
+
+        mb = _BELOW_LINE.match(line)
+        if mb:
+            current["below"] = _split_levels(mb.group(1))
+            continue
+        ma = _ABOVE_LINE.match(line)
+        if ma:
+            current["above"] = _split_levels(ma.group(1))
+            continue
+        # Any other line — ignore (allows pasting around extra commentary).
+
+    if current is not None:
+        blocks.append(current)
+
+    out: list[LevelSnapshot] = []
+    for b in blocks:
+        out.append(LevelSnapshot(
+            ticker=b["ticker"],
+            asof_ts=asof_ts,
+            current_price=b["current_price"],
+            levels_below=b["below"],
+            levels_above=b["above"],
+            source=source,
+            note="",
+        ))
+    return out

@@ -17,6 +17,60 @@
     </form>
 </div>
 
+<!-- Status banner after a paste -->
+{% if request.query_params.get('updated') %}
+<div class="mb-4 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded text-[12px] text-emerald-800">
+    ✓ Updated {{ request.query_params.get('updated') }} ticker level{{ "s" if request.query_params.get('updated') != "1" else "" }}.
+</div>
+{% elif request.query_params.get('parse_failed') is not none %}
+<div class="mb-4 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-[12px] text-amber-800">
+    ⚠ Didn't find any parseable ticker blocks — check the format.
+</div>
+{% endif %}
+
+<!-- Paste-to-update box. Primary daily-update surface. -->
+<div class="bg-white border border-stone-200 rounded-lg p-4 mb-6"
+     x-data="{ open: false }">
+    <button type="button" @click="open = !open"
+            class="w-full flex items-baseline justify-between text-left">
+        <div>
+            <h3 class="text-[12px] font-semibold uppercase tracking-wider text-stone-700">
+                Update from paste
+            </h3>
+            <p class="text-[11px] text-stone-500 mt-0.5">
+                Paste one or more ticker blocks. Each block creates a new dated snapshot.
+            </p>
+        </div>
+        <span class="text-stone-400 text-xs" x-text="open ? '−' : '+'"></span>
+    </button>
+
+    <div x-show="open" x-collapse class="mt-3 pt-3 border-t border-stone-100">
+        <form method="post" action="/settings/levels/paste">
+            <textarea name="text" rows="8" required
+                      class="w-full px-3 py-2 mono text-[12px] border border-stone-300 rounded
+                             focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                      placeholder="AAPL  (Current Price: $291.10)
+Levels Below: [270.02, 274.33, 277.33, 282.54, 288.72]
+Levels Above: [293.86, 300.01, 310.58, 315.16, 318.09]
+
+NVDA  (Current Price: $215.40)
+Levels Below: [195, 200, 205, 210, 213]
+Levels Above: [218, 222, 225, 230, 235]"></textarea>
+            <div class="flex items-center gap-3 mt-2">
+                <button type="submit"
+                        class="px-3 py-1.5 text-[12px] bg-emerald-600 text-white rounded
+                               hover:bg-emerald-700">
+                    Save snapshots
+                </button>
+                <span class="text-[11px] text-stone-400">
+                    Multiple tickers OK · brackets optional · ticker must be the first
+                    token on its line · tolerant to extra commentary between blocks
+                </span>
+            </div>
+        </form>
+    </div>
+</div>
+
 <p class="text-[12px] text-stone-500 mb-5 max-w-3xl leading-relaxed">
     Per-ticker key levels used in pregame analysis and trade review. Each row is the
     latest snapshot; older snapshots stay in the DB as history. A

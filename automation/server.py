@@ -2246,6 +2246,29 @@ async def settings_levels_view(request: Request, q: Optional[str] = None) -> HTM
     )
 
 
+@app.post("/settings/levels/paste", response_class=HTMLResponse)
+async def settings_levels_paste(
+    request: Request,
+    text: str = Form(""),
+) -> RedirectResponse:
+    """Bulk update levels by pasting the chartist's text format:
+
+        AAPL  (Current Price: $291.10)
+        Levels Below: [270.02, 274.33, 277.33, 282.54, 288.72]
+        Levels Above: [293.86, 300.01, 310.58, 315.16, 318.09]
+
+    Multiple tickers per paste are supported (back-to-back blocks).
+    Each parsed block is upserted as a new snapshot stamped with NOW.
+    """
+    from . import levels as _lv
+    snaps = _lv.parse_pasted_levels(text, source="manual")
+    for s in snaps:
+        _lv.upsert(s)
+    n = len(snaps)
+    flag = f"updated={n}" if n else "parse_failed"
+    return RedirectResponse(url=f"/settings/levels?{flag}", status_code=303)
+
+
 @app.post("/settings/levels/{ticker}", response_class=HTMLResponse)
 async def settings_levels_upsert(
     request: Request,
