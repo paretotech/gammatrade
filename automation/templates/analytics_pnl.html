@@ -308,16 +308,6 @@
         <span class="text-[11px] text-stone-500">{{ equity.n_trades }} trades</span>
     </div>
 
-    {# Current P&L only — peak/drawdown stats removed per user preference. #}
-    <div class="mb-4 text-[12px]">
-        <div class="text-[10px] uppercase tracking-wider text-stone-500">Current P&amp;L</div>
-        <div class="mono text-lg font-semibold
-            {% if equity.current_pnl > 0 %}text-emerald-700
-            {% elif equity.current_pnl < 0 %}text-red-700{% endif %}">
-            {% if equity.current_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(equity.current_pnl) }}
-        </div>
-    </div>
-
     <div class="relative" style="height: 240px;">
         <canvas x-ref="canvas"></canvas>
     </div>
