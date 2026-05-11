@@ -1088,6 +1088,68 @@ async def analytics_trades(
     )
 
 
+@app.get("/trades/{intent_id}", response_class=HTMLResponse)
+async def trade_detail(request: Request, intent_id: str) -> HTMLResponse:
+    """Full lifecycle view of a single trade: intent + every fill + MFE/MAE
+    + pregame mention (if any) + journal mention (if any)."""
+    from . import analytics as _a
+
+    # Match closed_trades' shape for this intent so we get computed fields
+    # (realized_pnl, capture %, tp_fills, MFE/MAE percentages, etc.).
+    all_closed = _a.closed_trades(limit=5000, range_key="all")
+    trade = next((t for t in all_closed if t["intent_id"] == intent_id), None)
+
+    raw_intent = state.get_intent(intent_id)
+    if trade is None and raw_intent is None:
+        return RedirectResponse(url="/analytics/trades", status_code=303)
+
+    # All fills (raw), regardless of whether the trade is fully closed.
+    with state.connect() as conn:
+        fills = [dict(r) for r in conn.execute(
+            "SELECT ts, side, contracts, price, is_entry, tp_tier "
+            "FROM fills WHERE intent_id=? ORDER BY ts ASC, rowid ASC",
+            (intent_id,),
+        ).fetchall()]
+
+    # Pregame mention: was this ticker in the day's pregame analysis?
+    pregame_mention = None
+    entry_ts = (trade and trade.get("first_entry_ts")) or (raw_intent and raw_intent.get("created_at"))
+    entry_date = entry_ts[:10] if entry_ts else None
+    if entry_date:
+        from .analysis import get_cached as _get_pregame
+        cached = _get_pregame(entry_date)
+        if cached and cached.get("status") == "ok" and cached.get("analysis"):
+            ticker = (trade or raw_intent or {}).get("ticker")
+            picks = cached["analysis"].get("picks") or []
+            for p in picks:
+                if (p.get("ticker") or "").upper() == (ticker or "").upper():
+                    pregame_mention = {"date": entry_date, **p}
+                    break
+
+    # Journal mention: was there a journal entry for that date?
+    journal_mention = None
+    if entry_date:
+        je = journal.load(entry_date)
+        if je and any(je.get(k, "").strip() for k in
+                      ("plan_adherence", "wins", "losses", "lessons", "mfe_gaps", "notes")):
+            journal_mention = {"date": entry_date, **je}
+
+    return TEMPLATES.TemplateResponse(
+        "trade_detail.html",
+        {
+            "request":         request,
+            "page_title":      "Trade detail",
+            "intent_id":       intent_id,
+            "trade":           trade,           # None if still open
+            "raw_intent":      raw_intent,      # always present
+            "fills":           fills,
+            "pregame_mention": pregame_mention,
+            "journal_mention": journal_mention,
+            **nav_context(),
+        },
+    )
+
+
 @app.post("/analytics/trades/import", response_class=HTMLResponse)
 async def analytics_trades_import(
     request: Request,
@@ -1664,19 +1726,66 @@ async def settings_landing(request: Request) -> RedirectResponse:
 # Generic per-key endpoints so adding a new managed secret is just a config
 # entry in automation/secrets.py:MANAGED — no new routes needed.
 
+def _mfe_backfill_status() -> dict:
+    """How many closed trades have MFE/MAE backfilled vs total."""
+    with state.connect() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM trade_intents WHERE status IN ('filled','closed')"
+        ).fetchone()[0]
+        done = conn.execute("""
+            SELECT COUNT(*) FROM trade_intents
+            WHERE status IN ('filled','closed')
+              AND mfe_in_trade_price IS NOT NULL
+              AND mfe_to_expiry_price IS NOT NULL
+        """).fetchone()[0]
+    pct = round(done / total * 100, 1) if total else 0
+    return {"total": total, "done": done, "pct": pct, "pending": total - done}
+
+
+def _backfill_log_tail(name: str, n: int = 12) -> str:
+    p = Path(__file__).resolve().parent.parent / "data" / f"_{name}.log"
+    if not p.exists():
+        return ""
+    try:
+        lines = p.read_text().splitlines()
+        return "\n".join(lines[-n:])
+    except OSError:
+        return ""
+
+
 @app.get("/settings/keys", response_class=HTMLResponse)
 async def settings_keys_view(request: Request) -> HTMLResponse:
     return TEMPLATES.TemplateResponse(
         "keys.html",
         {
-            "request":    request,
-            "page_title": "Settings",
-            "active_tab": "keys",
-            "keys":       user_secrets.status(),
-            "key_meta":   _KEY_META,
+            "request":           request,
+            "page_title":        "Settings",
+            "active_tab":        "keys",
+            "keys":              user_secrets.status(),
+            "key_meta":          _KEY_META,
+            "mfe_backfill":      _mfe_backfill_status(),
+            "mfe_backfill_log":  _backfill_log_tail("mfe_mae_backfill"),
             **nav_context(),
         },
     )
+
+
+@app.post("/settings/backfill/mfe-mae", response_class=HTMLResponse)
+async def settings_backfill_mfe_mae(request: Request) -> RedirectResponse:
+    """Kick off the Polygon MFE/MAE backfill in a detached subprocess so
+    the request returns immediately. Status is visible on this same page;
+    log lines stream to data/_mfe_mae_backfill.log."""
+    import subprocess
+    REPO = Path(__file__).resolve().parent.parent
+    log_path = REPO / "data" / "_mfe_mae_backfill.log"
+    cmd = f"cd {REPO} && python3 -u scripts/backfill_mfe_mae.py"
+    subprocess.Popen(
+        ["bash", "-c", cmd],
+        stdout=open(log_path, "ab"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    return RedirectResponse(url="/settings/keys?backfill=started", status_code=303)
 
 
 # Human-readable metadata for each managed secret. Kept here (not in

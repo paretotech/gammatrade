@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+
+{% block page_meta %}
+<a href="/analytics/trades" class="text-stone-500 text-sm hover:text-stone-900">← trade log</a>
+{% endblock %}
+
+{% block content %}
+
+{% set t = trade or raw_intent %}
+
+<!-- Header -->
+<div class="flex items-baseline justify-between flex-wrap gap-3 mb-6">
+    <div>
+        <h1 class="text-xl font-semibold text-stone-900 mono">
+            {{ t.ticker }}
+            {% if t.strike == t.strike|int %}{{ t.strike|int }}{% else %}{{ t.strike }}{% endif %}{{ t.right }}
+            <span class="text-stone-400 text-sm font-normal">exp {{ t.expiry }}</span>
+        </h1>
+        <div class="text-[12px] text-stone-500 mt-0.5">
+            intent {{ intent_id }}
+            {% if trade %} · {{ trade.entry_qty }} contracts · status <span class="mono">{{ raw_intent.status }}</span>
+            {% else %} · still open · status <span class="mono">{{ raw_intent.status }}</span>{% endif %}
+        </div>
+    </div>
+    {% if trade %}
+    <div class="text-right">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500">Realized</div>
+        <div class="text-2xl font-semibold mono {% if trade.realized_pnl > 0 %}text-emerald-600{% elif trade.realized_pnl < 0 %}text-red-600{% endif %}">
+            {% if trade.realized_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(trade.realized_pnl) }}
+        </div>
+        <div class="text-[11px] mono text-stone-500">
+            {% if trade.roi >= 0 %}+{% endif %}{{ "%.1f"|format(trade.roi * 100) }}% ROI
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Two-column layout: lifecycle (left), context (right) -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- LEFT — lifecycle (fills + MFE/MAE) -->
+    <div class="lg:col-span-2 space-y-6">
+
+        <!-- Fill ladder -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Fill ladder</div>
+            {% if fills %}
+            <table class="w-full text-[12px] mono">
+                <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+                    <tr>
+                        <th class="text-left  py-1.5 font-medium">When</th>
+                        <th class="text-left  py-1.5 font-medium">Side</th>
+                        <th class="text-right py-1.5 font-medium">Qty</th>
+                        <th class="text-right py-1.5 font-medium">Price</th>
+                        <th class="text-left  py-1.5 font-medium">Tier</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-stone-100">
+                {% for f in fills %}
+                    <tr>
+                        <td class="py-1.5">{{ f.ts[:16] }}</td>
+                        <td class="py-1.5">
+                            {% if f.is_entry == 1 %}
+                            <span class="text-emerald-700">{{ f.side }}</span>
+                            {% else %}
+                            <span class="text-red-700">{{ f.side }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="py-1.5 text-right">{{ f.contracts }}</td>
+                        <td class="py-1.5 text-right">${{ "%.2f"|format(f.price) }}</td>
+                        <td class="py-1.5 text-stone-500 text-[11px]">
+                            {% if f.tp_tier %}TP{{ f.tp_tier }}{% else %}—{% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-[12px] text-stone-400">No fills recorded for this intent.</p>
+            {% endif %}
+        </div>
+
+        <!-- MFE / MAE -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">MFE / MAE</div>
+            {% if trade and (trade.mfe_in_pct is not none or trade.mfe_exp_pct is not none) %}
+                <table class="w-full text-[12px]">
+                    <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+                        <tr>
+                            <th class="text-left  py-1.5 font-medium">Window</th>
+                            <th class="text-right py-1.5 font-medium">Max favorable</th>
+                            <th class="text-right py-1.5 font-medium">Max adverse</th>
+                            <th class="text-right py-1.5 font-medium">You captured</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-stone-100">
+                        <tr>
+                            <td class="py-1.5">In-trade <span class="text-stone-400 text-[11px]">(entry → exit)</span></td>
+                            <td class="py-1.5 text-right mono {% if trade.mfe_in_pct and trade.mfe_in_pct > 0 %}text-emerald-600{% endif %}">
+                                {% if trade.mfe_in_pct is not none %}{{ "%+.1f"|format(trade.mfe_in_pct) }}%{% else %}—{% endif %}
+                            </td>
+                            <td class="py-1.5 text-right mono {% if trade.mae_in_pct and trade.mae_in_pct < 0 %}text-red-600{% endif %}">
+                                {% if trade.mae_in_pct is not none %}{{ "%+.1f"|format(trade.mae_in_pct) }}%{% else %}—{% endif %}
+                            </td>
+                            <td class="py-1.5 text-right mono text-stone-700">
+                                {% if trade.capture_pct is not none %}{{ trade.capture_pct }}%{% else %}—{% endif %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="py-1.5">To-expiry <span class="text-stone-400 text-[11px]">(counterfactual)</span></td>
+                            <td class="py-1.5 text-right mono {% if trade.mfe_exp_pct and trade.mfe_exp_pct > 0 %}text-emerald-600{% endif %}">
+                                {% if trade.mfe_exp_pct is not none %}{{ "%+.1f"|format(trade.mfe_exp_pct) }}%{% else %}—{% endif %}
+                            </td>
+                            <td class="py-1.5 text-right mono {% if trade.mae_exp_pct and trade.mae_exp_pct < 0 %}text-red-600{% endif %}">
+                                {% if trade.mae_exp_pct is not none %}{{ "%+.1f"|format(trade.mae_exp_pct) }}%{% else %}—{% endif %}
+                            </td>
+                            <td class="py-1.5 text-right mono text-stone-700">
+                                {% if trade.capture_exp_pct is not none %}{{ trade.capture_exp_pct }}%{% else %}—{% endif %}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p class="text-[11px] text-stone-400 mt-2">
+                    Actual ROI: <span class="mono">{{ trade.actual_pct }}%</span>.
+                    "Captured" = actual / MFE, capped at 100%.
+                </p>
+            {% else %}
+                <p class="text-[12px] text-stone-500">
+                    No MFE/MAE data yet. Run the Polygon backfill on
+                    <a href="/settings/keys" class="text-emerald-700 hover:underline">Settings → API keys</a>
+                    to populate these columns.
+                </p>
+            {% endif %}
+        </div>
+
+        <!-- TP fills detail -->
+        {% if trade and trade.tp_fills %}
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">TP execution</div>
+            <table class="w-full text-[12px] mono">
+                <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+                    <tr>
+                        <th class="text-left  py-1.5 font-medium">Tier</th>
+                        <th class="text-right py-1.5 font-medium">Qty</th>
+                        <th class="text-right py-1.5 font-medium">Price</th>
+                        <th class="text-right py-1.5 font-medium">% from entry</th>
+                        <th class="text-right py-1.5 font-medium">Mins held</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-stone-100">
+                {% for tp in trade.tp_fills %}
+                    <tr>
+                        <td class="py-1.5">TP{{ tp.tier }}</td>
+                        <td class="py-1.5 text-right">{{ tp.qty }}</td>
+                        <td class="py-1.5 text-right">${{ "%.2f"|format(tp.price) }}</td>
+                        <td class="py-1.5 text-right {% if tp.pct and tp.pct > 0 %}text-emerald-600{% elif tp.pct and tp.pct < 0 %}text-red-600{% endif %}">
+                            {% if tp.pct is not none %}{{ "%+.1f"|format(tp.pct) }}%{% else %}—{% endif %}
+                        </td>
+                        <td class="py-1.5 text-right">
+                            {% if tp.mins is not none %}{{ tp.mins }}{% else %}—{% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- RIGHT — context (pregame + journal) -->
+    <div class="space-y-6">
+
+        <!-- Intent metadata -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Intent</div>
+            <dl class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px]">
+                <dt class="text-stone-500">Regime</dt>
+                <dd class="mono">{{ raw_intent.regime_tag or "—" }}</dd>
+
+                <dt class="text-stone-500">Chain role</dt>
+                <dd class="mono">{{ raw_intent.chain_role or "—" }}</dd>
+
+                <dt class="text-stone-500">Sector</dt>
+                <dd class="mono">{{ raw_intent.sector or "—" }}</dd>
+
+                <dt class="text-stone-500">Order type</dt>
+                <dd class="mono">{{ raw_intent.order_type or "—" }}</dd>
+
+                <dt class="text-stone-500">Limit price</dt>
+                <dd class="mono">
+                    {% if raw_intent.limit_price %}${{ "%.2f"|format(raw_intent.limit_price) }}{% else %}—{% endif %}
+                </dd>
+
+                <dt class="text-stone-500">Stop discipline</dt>
+                <dd class="mono">{{ raw_intent.stop_discipline or "—" }}</dd>
+
+                <dt class="text-stone-500">TP split</dt>
+                <dd class="mono">{{ raw_intent.tp_split_choice or "—" }}</dd>
+
+                <dt class="text-stone-500">Created</dt>
+                <dd class="mono">{{ raw_intent.created_at[:16] if raw_intent.created_at else "—" }}</dd>
+            </dl>
+            {% if raw_intent.notes %}
+            <div class="mt-3 pt-3 border-t border-stone-100 text-[12px]">
+                <div class="text-stone-500 mb-1">Notes</div>
+                <div class="text-stone-700 leading-relaxed">{{ raw_intent.notes }}</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Pregame mention -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Pregame mention</div>
+            {% if pregame_mention %}
+            <a href="/pregame/{{ pregame_mention.date }}" class="block text-[12px] text-stone-700 hover:bg-stone-50 -m-2 p-2 rounded">
+                <div class="flex items-baseline gap-2 mb-1.5">
+                    <span class="text-[11px] mono px-1.5 py-0.5 rounded
+                        {% if pregame_mention.verdict == 'LIKE' %}bg-emerald-50 text-emerald-700 border border-emerald-200
+                        {% elif pregame_mention.verdict == 'PASS' %}bg-stone-100 text-stone-600 border border-stone-200
+                        {% else %}bg-amber-50 text-amber-700 border border-amber-200{% endif %}">
+                        {{ pregame_mention.verdict }}
+                    </span>
+                    <span class="text-[11px] mono text-stone-500">{{ pregame_mention.date }}</span>
+                </div>
+                <p class="text-[12px] text-stone-700 leading-relaxed">{{ pregame_mention.reasoning }}</p>
+                {% if pregame_mention.suggested_size %}
+                <p class="text-[11px] text-stone-500 mt-1.5">
+                    Suggested size: <span class="mono">{{ pregame_mention.suggested_size }}</span>
+                </p>
+                {% endif %}
+            </a>
+            {% else %}
+            <p class="text-[12px] text-stone-400">
+                No pregame analysis cached for {{ raw_intent.created_at[:10] if raw_intent.created_at else "this date" }},
+                or {{ t.ticker }} wasn't in the picks.
+            </p>
+            {% endif %}
+        </div>
+
+        <!-- Journal mention -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Journal entry</div>
+            {% if journal_mention %}
+            <a href="/journal/{{ journal_mention.date }}" class="block text-[12px] text-stone-700 hover:bg-stone-50 -m-2 p-2 rounded space-y-2">
+                <div class="text-[11px] mono text-stone-500">{{ journal_mention.date }}</div>
+                {% if journal_mention.lessons %}
+                <div>
+                    <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium">Lessons</div>
+                    <div class="text-stone-700">{{ journal_mention.lessons }}</div>
+                </div>
+                {% endif %}
+                {% if journal_mention.mfe_gaps %}
+                <div>
+                    <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium">MFE gaps</div>
+                    <div class="text-stone-700">{{ journal_mention.mfe_gaps }}</div>
+                </div>
+                {% endif %}
+            </a>
+            {% else %}
+            <p class="text-[12px] text-stone-400">
+                No journal entry for {{ raw_intent.created_at[:10] if raw_intent.created_at else "this date" }}.
+                <a href="/journal/{{ raw_intent.created_at[:10] if raw_intent.created_at else '' }}" class="text-emerald-700 hover:underline">Write one →</a>
+            </p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% endblock %}

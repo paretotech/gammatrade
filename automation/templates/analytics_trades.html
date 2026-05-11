@@ -151,7 +151,7 @@
                             x-text="isOpen(r.intent_id) ? '▾' : '▸'"></td>
                         <td class="px-3 py-1.5 mono text-[12px] text-stone-600" x-text="r.entry_date"></td>
                         <td class="px-3 py-1.5 mono font-medium" @click.stop>
-                            <a :href="'/positions/' + r.intent_id" class="hover:text-emerald-700" x-text="r.ticker"></a>
+                            <a :href="'/trades/' + r.intent_id" class="hover:text-emerald-700" x-text="r.ticker"></a>
                         </td>
                         <td class="px-3 py-1.5 mono text-[12px] text-stone-500" x-text="r.expiry + ' ' + r.strike + r.right"></td>
                         <td class="px-3 py-1.5 text-right mono text-[12px]" x-text="r.entry_qty"></td>
