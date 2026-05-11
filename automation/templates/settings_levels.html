@@ -105,24 +105,38 @@ Levels Above: [218, 222, 225, 230, 235]"></textarea>
                     {% endif %}
                 </td>
                 <td class="py-2 text-right mono">
-                    {% if r.last_close %}
-                        ${{ "%.2f"|format(r.last_close) }}
-                        {% if r.last_close != r.current_price %}
-                        <div class="text-[10px] text-stone-400">
-                            snap ${{ "%.2f"|format(r.current_price) if r.current_price else "—" }}
+                    {# Primary line = the snapshot's published current_price
+                       (whatever the chartist sent / the user pasted).
+                       Secondary line = the cached underlying close, shown
+                       ONLY when it's meaningfully different so you can see
+                       at a glance that price has moved since publish. #}
+                    {% if r.current_price %}
+                        ${{ "%.2f"|format(r.current_price) }}
+                        {% if r.last_close and r.last_close != r.current_price
+                              and (r.last_close - r.current_price) | abs / r.current_price > 0.005 %}
+                        <div class="text-[10px] text-stone-400"
+                             title="last cached underlying bar close">
+                            live ${{ "%.2f"|format(r.last_close) }}
                         </div>
                         {% endif %}
+                    {% elif r.last_close %}
+                        <span class="text-stone-400">${{ "%.2f"|format(r.last_close) }}</span>
                     {% else %}
                         —
                     {% endif %}
                 </td>
+
+                {# Closest level to current is highlighted. Prefer the live
+                   bar close when we have it; otherwise fall back to the
+                   chartist's published current_price from the snapshot. #}
+                {% set ref_price = r.last_close or r.current_price %}
 
                 {# Levels below — read mode #}
                 <td class="px-3 py-2 mono text-[11px] text-stone-700" x-show="!editing">
                     {% if r.levels_below %}
                         {% for lvl in r.levels_below %}<span
                             class="inline-block px-1.5 py-0.5 rounded
-                                   {% if r.last_close and (r.last_close - lvl) / r.last_close < 0.01 %}bg-emerald-50 text-emerald-700{% else %}text-stone-600{% endif %}">${{ "%g"|format(lvl) }}</span>{% endfor %}
+                                   {% if ref_price and (ref_price - lvl) / ref_price < 0.01 %}bg-emerald-50 text-emerald-700{% else %}text-stone-600{% endif %}">${{ "%g"|format(lvl) }}</span>{% endfor %}
                     {% else %}
                         <span class="text-stone-400">—</span>
                     {% endif %}
@@ -132,7 +146,7 @@ Levels Above: [218, 222, 225, 230, 235]"></textarea>
                     {% if r.levels_above %}
                         {% for lvl in r.levels_above %}<span
                             class="inline-block px-1.5 py-0.5 rounded
-                                   {% if r.last_close and (lvl - r.last_close) / r.last_close < 0.01 %}bg-red-50 text-red-700{% else %}text-stone-600{% endif %}">${{ "%g"|format(lvl) }}</span>{% endfor %}
+                                   {% if ref_price and (lvl - ref_price) / ref_price < 0.01 %}bg-red-50 text-red-700{% else %}text-stone-600{% endif %}">${{ "%g"|format(lvl) }}</span>{% endfor %}
                     {% else %}
                         <span class="text-stone-400">—</span>
                     {% endif %}
