@@ -18,8 +18,7 @@ Supported formats:
 The script copies the CSV into `~/.gamma/data/td_exports/` (the plugin's import dir), runs the dedupe pipeline, and loads new trades into the SQLite. Run multiple times safely — already-imported rows are skipped.
 
 ```bash
-PLUGIN_DIR="${CLAUDE_PLUGIN_DIR:-$HOME/.claude/plugins/gammatrade}"
-cd "$PLUGIN_DIR"
+cd "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT not set — run this as a slash command}"
 
 CSV_PATH="${1:?Usage: /gamma-import-trades <path-to-csv>}"
 

@@ -6,8 +6,7 @@ description: End-of-day journal. Pulls today's closed trades from the local SQLi
 Run an end-of-day review of today's trading.
 
 ```bash
-PLUGIN_DIR="${CLAUDE_PLUGIN_DIR:-$HOME/.claude/plugins/gammatrade}"
-cd "$PLUGIN_DIR"
+cd "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT not set — run this as a slash command}"
 
 python3 -c "
 from automation import analytics
