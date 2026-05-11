@@ -1238,23 +1238,34 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
     else:
         x_min = int(df["t"].iloc[0])
 
-    # Upper bound: expiry close, but clamped to last_event + 4h padding.
-    # last_event = the latest of (last cached bar, last fill) so exit
-    # fills that happen after the bars go quiet stay visible.
+    # Upper bound: chart shows entry → last exit fill + 4h padding.
+    # We intentionally hide the post-exit window — the chart's job is
+    # reviewing YOUR execution, not the option's full lifecycle. The
+    # to-expiry MFE survives as a number in the capture summary block,
+    # not as additional bars on the line.
+    #
+    # For open trades (no exit fill yet) we fall through to the last
+    # cached bar, so the chart still extends to "now" while the trade
+    # is live.
     expiry_close_dt = datetime.combine(expiry_d, datetime.min.time(), tzinfo=_ET).replace(hour=16)
     expiry_close_ms = int(expiry_close_dt.timestamp() * 1000)
     last_bar_ms     = int(df["t"].iloc[-1])
 
-    last_fill_ms = last_bar_ms
+    last_exit_fill_ms = None
     for f in fills:
+        if f.get("is_entry") == 1:
+            continue
         try:
             fdt = datetime.fromisoformat(f["ts"][:19]).replace(tzinfo=_ET)
-            last_fill_ms = max(last_fill_ms, int(fdt.timestamp() * 1000))
+            ms  = int(fdt.timestamp() * 1000)
         except (KeyError, TypeError, ValueError):
             continue
+        if last_exit_fill_ms is None or ms > last_exit_fill_ms:
+            last_exit_fill_ms = ms
 
-    pad_ms = 4 * 60 * 60 * 1000   # 4 hours
-    x_max  = min(expiry_close_ms, max(last_bar_ms, last_fill_ms) + pad_ms)
+    pad_ms     = 4 * 60 * 60 * 1000   # 4 hours
+    chart_end  = last_exit_fill_ms if last_exit_fill_ms is not None else last_bar_ms
+    x_max      = min(expiry_close_ms, chart_end + pad_ms)
 
     # Markers: each fill at its timestamp. Fill timestamps are stored as
     # naive ET (broker local time) — localize explicitly so the host
@@ -1319,13 +1330,14 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
             "contracts": f["contracts"],
         })
 
-    # MFE marker — single dot at the (timestamp, high) of the bar that
-    # actually printed the maximum favorable price over the lifecycle.
-    # Source is the bar's HIGH (not close), so it lands slightly above
-    # the close-only line — that's the point.
+    # MFE marker — single dot at (timestamp, high) of the bar that
+    # printed the max favorable price WHILE the trade was active.
+    # Bounded by x_min..(last_exit or last_bar), so we never plot a
+    # marker in the post-exit window the chart no longer shows.
     mfe_marker = None
     if "h" in df.columns and not df["h"].dropna().empty:
-        mfe_df = df[(df["t"] >= x_min) & (df["t"] <= x_max)].dropna(subset=["h"])
+        mfe_upper = last_exit_fill_ms if last_exit_fill_ms is not None else last_bar_ms
+        mfe_df = df[(df["t"] >= x_min) & (df["t"] <= mfe_upper)].dropna(subset=["h"])
         if not mfe_df.empty:
             idx = mfe_df["h"].idxmax()
             mfe_marker = {
@@ -1343,14 +1355,48 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
     if expiry_close_ms <= x_max:
         expiry_marker = {"t": expiry_close_ms, "y": float(df["c"].iloc[-1])}
 
-    # Reference levels for the chart's horizontal lines + the in-trade
-    # vs post-trade shading. Pull them off the markers we just built so
-    # the chart and the markers stay in sync (entry_price could differ
-    # from the SQL "first entry fill" if there are multiple entries).
-    last_exit_t = None
-    for m in markers:
-        if m["kind"] != "entry":   # last non-entry fill
-            last_exit_t = m["t"]   # markers are chronological — last wins
+    # Capture summary stats — rendered as a small text block in the
+    # chart's top-right corner. Computed from the same fills + intent
+    # MFE columns we already have, so the chart route is self-contained.
+    realized_pct  = None
+    mfe_in_pct    = None
+    mfe_exp_pct   = None
+    capture_pct   = None
+    days_to_peak  = None  # +N days from last exit to MFE peak when MFE is post-exit
+
+    buy_qty   = sum(f["contracts"] for f in fills if f.get("is_entry") == 1)
+    sell_qty  = sum(f["contracts"] for f in fills if f.get("is_entry") != 1)
+    buy_cost  = sum(f["price"] * f["contracts"] for f in fills if f.get("is_entry") == 1)
+    sell_rev  = sum(f["price"] * f["contracts"] for f in fills if f.get("is_entry") != 1)
+
+    if buy_qty > 0:
+        avg_entry = buy_cost / buy_qty
+        if sell_qty > 0:
+            avg_exit = sell_rev / sell_qty
+            realized_pct = (avg_exit / avg_entry - 1) * 100
+
+        mfe_in_price  = raw_intent.get("mfe_in_trade_price")
+        mfe_exp_price = raw_intent.get("mfe_to_expiry_price")
+        if mfe_in_price is not None:
+            mfe_in_pct  = (mfe_in_price  / avg_entry - 1) * 100
+        if mfe_exp_price is not None:
+            mfe_exp_pct = (mfe_exp_price / avg_entry - 1) * 100
+
+        if mfe_in_pct is not None and mfe_in_pct > 0 and realized_pct is not None:
+            capture_pct = max(0, min(100, realized_pct / mfe_in_pct * 100))
+
+    # If the to-expiry MFE is meaningfully higher than the in-trade MFE,
+    # the user "missed" a post-exit move. Surface how many days after
+    # the last exit the peak occurred — but only when the bars file has
+    # data that lets us locate it.
+    if (mfe_in_pct is not None and mfe_exp_pct is not None
+            and mfe_exp_pct > mfe_in_pct + 0.5  # ignore noise
+            and last_exit_fill_ms is not None):
+        if "h" in df.columns:
+            post_df = df[df["t"] > last_exit_fill_ms].dropna(subset=["h"])
+            if not post_df.empty:
+                peak_t  = int(post_df.loc[post_df["h"].idxmax(), "t"])
+                days_to_peak = (peak_t - last_exit_fill_ms) / (1000 * 86400)
 
     return JSONResponse({
         "occ":           occ,
@@ -1359,13 +1405,19 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         "right":         raw_intent["right"],
         "expiry":        str(expiry_d),
         "x_min":         x_min,           # epoch ms — chart axis lower bound
-        "x_max":         x_max,           # epoch ms — chart axis upper bound
+        "x_max":         x_max,           # epoch ms — chart axis upper bound (last exit + 4h)
         "entry_price":   entry_price,     # for the Entry horizontal reference line
-        "last_exit_t":   last_exit_t,     # epoch ms — divides in-trade vs post-trade shading
         "bars":          bars_payload,    # [{t: epoch_ms, c: close}]
         "markers":       markers,         # [{t, y, kind, label, ...}]
-        "mfe_marker":    mfe_marker,      # {t, y, kind:'mfe', label:'MFE peak'} or null
-        "expiry_marker": expiry_marker,   # null when expiry is past the visible window
+        "mfe_marker":    mfe_marker,      # in-trade MFE peak
+        "expiry_marker": expiry_marker,
+        "stats": {                        # capture summary block payload
+            "realized_pct":  realized_pct,
+            "mfe_in_pct":    mfe_in_pct,
+            "mfe_exp_pct":   mfe_exp_pct,
+            "capture_pct":   capture_pct,
+            "days_to_peak":  days_to_peak,
+        },
     })
 
 

@@ -47,7 +47,7 @@
              x-init="load()">
             <div class="flex items-baseline justify-between mb-3">
                 <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">
-                    Option price · entry → expiry
+                    Option price · entry → last exit
                 </div>
                 <div class="text-[11px] text-stone-400" x-show="status === 'ok'">
                     <span class="mono" x-text="occ"></span>
@@ -69,6 +69,43 @@
 
             <div x-show="status === 'ok'" class="relative" style="height: 280px;">
                 <canvas x-ref="canvas"></canvas>
+
+                <!-- Capture summary — floats top-right inside the chart -->
+                <div class="absolute top-2 right-2 bg-white/85 backdrop-blur-sm
+                            border border-stone-200 rounded px-2.5 py-1.5
+                            text-[11px] leading-tight shadow-sm pointer-events-none"
+                     x-show="stats && (stats.realized_pct != null || stats.mfe_in_pct != null)">
+                    <table class="mono">
+                        <tr>
+                            <td class="text-stone-500 pr-3">Realized</td>
+                            <td x-show="stats.realized_pct != null"
+                                :class="stats.realized_pct >= 0 ? 'text-emerald-700' : 'text-red-700'"
+                                x-text="(stats.realized_pct >= 0 ? '+' : '') + stats.realized_pct?.toFixed(1) + '%'"></td>
+                            <td x-show="stats.realized_pct == null" class="text-stone-400">—</td>
+                        </tr>
+                        <tr>
+                            <td class="text-stone-500 pr-3">MFE in-trade</td>
+                            <td class="text-fuchsia-700"
+                                x-text="stats.mfe_in_pct != null ? ('+' + stats.mfe_in_pct.toFixed(1) + '%') : '—'"></td>
+                        </tr>
+                        <!-- Only show the to-expiry MFE row when it's meaningfully higher
+                             than the in-trade MFE (>5 percentage points) AND happened at
+                             least 4 hours after the last exit — otherwise it's noise. -->
+                        <tr x-show="stats.mfe_exp_pct != null
+                                    && stats.mfe_exp_pct > (stats.mfe_in_pct || 0) + 5
+                                    && (stats.days_to_peak || 0) > 0.2">
+                            <td class="text-stone-500 pr-3">MFE to-expiry</td>
+                            <td class="text-fuchsia-700"
+                                x-text="'+' + stats.mfe_exp_pct?.toFixed(1) + '%' +
+                                        (stats.days_to_peak ? ' (+' + Math.round(stats.days_to_peak) + 'd)' : '')"></td>
+                        </tr>
+                        <tr x-show="stats.capture_pct != null" class="border-t border-stone-200">
+                            <td class="text-stone-500 pr-3 pt-0.5">Captured</td>
+                            <td class="text-stone-900 font-semibold pt-0.5"
+                                x-text="Math.round(stats.capture_pct) + '%'"></td>
+                        </tr>
+                    </table>
+                </div>
             </div>
 
             <!-- Marker legend -->
@@ -96,10 +133,7 @@
                     <span class="inline-block w-2.5 h-2.5"
                           style="background: rgb(217, 70, 239); clip-path: polygon(50% 0, 100% 100%, 0 100%);"></span>
                     MFE peak
-                    <span class="text-stone-400 text-[10px]">(max favorable, entry → expiry)</span>
-                </span>
-                <span class="inline-flex items-center gap-1.5">
-                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-stone-400"></span> Expiry
+                    <span class="text-stone-400 text-[10px]">(max favorable, in trade)</span>
                 </span>
             </div>
         </div>
@@ -344,8 +378,8 @@ function tradeChart(intentId) {
         xMin:      null,
         xMax:      null,
         entryPrice: null,
-        lastExitT:  null,
         mfePrice:   null,
+        stats:      {},
         errorMsg:  '',
         _chart:    null,
 
@@ -369,21 +403,13 @@ function tradeChart(intentId) {
                 this.xMin       = body.x_min ?? null;
                 this.xMax       = body.x_max ?? null;
                 this.entryPrice = body.entry_price ?? null;
-                this.lastExitT  = body.last_exit_t ?? null;
                 this.mfePrice   = body.mfe_marker?.y ?? null;
+                this.stats      = body.stats || {};
 
                 // MFE peak marker (single dot at the bar that printed the
-                // max favorable price over the lifecycle).
+                // max favorable price during the trade window).
                 if (body.mfe_marker) {
                     this.markers.push(body.mfe_marker);
-                }
-
-                // Append the expiry marker so it shows alongside fills
-                if (body.expiry_marker) {
-                    this.markers.push({
-                        ...body.expiry_marker,
-                        kind: 'expiry', label: 'Expiry',
-                    });
                 }
 
                 this.status = 'ok';
@@ -412,15 +438,14 @@ function tradeChart(intentId) {
 
             const lineData = this.bars.map(b => ({ x: b.t, y: b.c }));
 
-            const kinds = ['entry', 'tp1', 'tp2', 'tp3', 'stop', 'close', 'mfe', 'expiry'];
+            const kinds = ['entry', 'tp1', 'tp2', 'tp3', 'stop', 'close', 'mfe'];
             const scatterDatasets = kinds.map(k => {
                 const points = this.markers
                     .filter(m => m.kind === k)
                     .map(m => ({ x: m.t, y: m.y, label: m.label,
                                  side: m.side, contracts: m.contracts }));
                 let radius = 6, pointStyle = 'circle';
-                if (k === 'expiry') { radius = 5; pointStyle = 'rectRot'; }
-                if (k === 'mfe')    { radius = 7; pointStyle = 'triangle'; }
+                if (k === 'mfe') { radius = 7; pointStyle = 'triangle'; }
                 return {
                     type: 'scatter',
                     label: k.toUpperCase(),
@@ -434,34 +459,12 @@ function tradeChart(intentId) {
                 };
             });
 
-            // Build annotation set: in-trade / post-trade shading + horizontal
-            // reference lines for entry price and MFE peak. Each is optional —
-            // we skip the ones we don't have data for.
+            // Annotations: horizontal reference lines only. The chart now
+            // shows only the in-trade window so there's no in-trade /
+            // post-trade boundary to shade — the whole chart IS in-trade.
             const annotations = {};
 
-            // (a) In-trade region — light emerald tint from entry to last exit
-            if (this.xMin != null && this.lastExitT != null) {
-                annotations.inTradeBox = {
-                    type: 'box',
-                    xMin: this.xMin,
-                    xMax: this.lastExitT,
-                    backgroundColor: 'rgba(16, 185, 129, 0.06)',  // emerald-500 @ 6%
-                    borderWidth: 0,
-                    drawTime: 'beforeDatasetsDraw',
-                };
-            }
-            // (b) Post-trade region — light gray tint from last exit to end
-            if (this.lastExitT != null && this.xMax != null && this.lastExitT < this.xMax) {
-                annotations.postTradeBox = {
-                    type: 'box',
-                    xMin: this.lastExitT,
-                    xMax: this.xMax,
-                    backgroundColor: 'rgba(120, 113, 108, 0.05)', // stone-500 @ 5%
-                    borderWidth: 0,
-                    drawTime: 'beforeDatasetsDraw',
-                };
-            }
-            // (c) Entry-price reference line — dashed emerald
+            // (a) Entry-price reference line — dashed emerald
             if (this.entryPrice != null) {
                 annotations.entryLine = {
                     type: 'line',
