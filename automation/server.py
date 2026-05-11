@@ -110,6 +110,27 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 # ─── New Entry ──────────────────────────────────────────────────────────────
 
+@app.get("/api/decision-card", response_class=JSONResponse)
+async def decision_card_api(
+    ticker: str,
+    strike: Optional[float] = None,
+    right: str = "C",
+    direction: Optional[str] = None,
+) -> JSONResponse:
+    """JSON payload powering the pre-trade decision card. The entry form
+    calls this on every relevant input change."""
+    from . import analytics as _a
+    try:
+        rules = app.state.rules
+        cap = rules.daily_loss_cap()
+    except Exception:
+        cap = 1000.0
+    return JSONResponse(_a.pretrade_decision_card(
+        ticker=ticker, strike=strike, right=right,
+        direction=direction, daily_loss_cap=cap,
+    ))
+
+
 @app.get("/entries/new", response_class=HTMLResponse)
 async def new_entry_form(
     request: Request,
@@ -1066,6 +1087,7 @@ async def analytics_pnl(
             "series": _a.daily_pnl_series(days=30),
             "calendar": _a.monthly_calendar(yr, mo),
             "advanced": _a.advanced_metrics(range_key=rng),
+            "equity":   _a.equity_curve(range_key=rng),
             **nav_context(),
         },
     )
@@ -1648,6 +1670,28 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
             "tab_slug": "sectors",
             "range_key": rng,
             "rows": _a.sector_leaderboard(range_key=rng),
+            **nav_context(),
+        },
+    )
+
+
+@app.get("/analytics/cohort", response_class=HTMLResponse)
+async def analytics_cohort(
+    request: Request,
+    range: Optional[str] = None,
+) -> HTMLResponse:
+    """Cohort benchmark — user metrics vs the reference_trades cohort."""
+    from . import analytics as _a
+    rng = _norm_range(range)
+    return TEMPLATES.TemplateResponse(
+        "analytics_cohort.html",
+        {
+            "request":    request,
+            "page_title": "Analytics",
+            "active_tab": "cohort",
+            "tab_slug":   "cohort",
+            "range_key":  rng,
+            "data":       _a.cohort_benchmark(range_key=rng),
             **nav_context(),
         },
     )

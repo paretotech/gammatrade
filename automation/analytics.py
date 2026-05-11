@@ -2775,3 +2775,460 @@ def _chain_record(ticker: str, side: str, legs: list[dict]) -> dict:
             for l in legs
         ],
     }
+
+
+# ─── Pre-trade decision card ─────────────────────────────────────────────
+# Composes a single artifact for the entry form / trigger creation flow:
+# given a candidate (ticker, strike, right, direction), pulls together
+# every dimension we already analyze post-trade and produces a structured
+# verdict the trader can glance at before clicking submit.
+
+def pretrade_decision_card(
+    ticker: str,
+    strike: Optional[float] = None,
+    right: str = "C",
+    direction: Optional[str] = None,
+    daily_loss_cap: float = 1000.0,
+) -> dict:
+    """Return per-dimension signals + an overall verdict for the candidate.
+
+    All sources are read from data we already have:
+      - published levels (level legitimacy + R:R)
+      - cached underlying bars (current price → bucket placement)
+      - closed_trades (ticker × side history + today's P&L + hour-of-day edge)
+    No live quotes required — uses last cached bar as "now".
+    """
+    direction = direction or ("above" if right == "C" else "below")
+    ticker_u  = (ticker or "").upper()
+
+    card: dict[str, Any] = {
+        "ticker":    ticker_u,
+        "strike":    strike,
+        "right":     right,
+        "direction": direction,
+        "signals":   [],
+    }
+    if not ticker_u:
+        card["error"] = "ticker required"
+        return card
+
+    # ── 1. Level legitimacy + R:R ─────────────────────────────────────
+    if strike is not None and strike > 0:
+        from . import levels as _lv
+        ev = _lv.evaluate_pick_level(ticker_u, float(strike), direction)
+        if ev is not None:
+            card["level_eval"] = ev
+
+    # ── 2. Underlying price + position bucket ─────────────────────────
+    try:
+        from src import bars_store
+        df = bars_store.load_underlying_bars(ticker_u)
+        if not df.empty:
+            card["underlying"] = round(float(df["c"].dropna().iloc[-1]), 2)
+    except (ImportError, FileNotFoundError):
+        pass
+
+    snap = None
+    try:
+        from . import levels as _lv
+        snap = _lv.latest_for_ticker(ticker_u)
+    except Exception:
+        pass
+
+    if card.get("underlying") and snap is not None and (snap.levels_above or snap.levels_below):
+        cls = _classify_position(card["underlying"], snap, proximity_pct=0.5)
+        card["bucket"] = cls
+
+    # ── 3. User's historical record for ticker × side ─────────────────
+    trades = closed_trades(limit=5000)
+    same_t = [t for t in trades if (t.get("ticker") or "").upper() == ticker_u]
+    same_ts = [t for t in same_t if t.get("right") == right]
+    wins_t = sum(1 for t in same_ts if (t.get("realized_pnl") or 0) > 0)
+
+    def _med(seq):
+        s = [x for x in seq if x is not None]
+        return round(median(s), 1) if s else None
+
+    card["user_history"] = {
+        "ticker_n":        len(same_t),
+        "ticker_side_n":   len(same_ts),
+        "ticker_side_wr":  round(wins_t / len(same_ts) * 100, 1) if same_ts else None,
+        "median_roi":      _med(t.get("actual_pct")     for t in same_ts),
+        "median_capture":  _med(t.get("capture_pct")    for t in same_ts),
+        "median_mfe":      _med(t.get("mfe_in_pct")     for t in same_ts),
+    }
+
+    # ── 4. Hour-of-day edge (uses current ET hour) ────────────────────
+    now_et = datetime.now(_ET)
+    hour = now_et.hour
+    same_hour = []
+    for t in trades:
+        ts = t.get("first_entry_ts")
+        if not ts:
+            continue
+        try:
+            h = datetime.fromisoformat(ts[:19]).hour
+        except ValueError:
+            continue
+        if h == hour:
+            same_hour.append(t)
+    wins_hour = sum(1 for t in same_hour if (t.get("realized_pnl") or 0) > 0)
+    card["hour_edge"] = {
+        "hour":       hour,
+        "n":          len(same_hour),
+        "win_rate":   round(wins_hour / len(same_hour) * 100, 1) if same_hour else None,
+        "median_roi": _med(t.get("actual_pct") for t in same_hour),
+    }
+
+    # ── 5. Daily P&L vs cap ───────────────────────────────────────────
+    today = date.today().isoformat()
+    today_trades = [
+        t for t in trades
+        if (t.get("first_entry_ts") or "")[:10] == today
+    ]
+    today_pnl = round(sum(t.get("realized_pnl") or 0 for t in today_trades), 0)
+    card["daily_budget"] = {
+        "today_pnl":     today_pnl,
+        "today_n":       len(today_trades),
+        "loss_cap":      daily_loss_cap,
+        "remaining":     round(daily_loss_cap + today_pnl, 0),  # cap is the absolute floor; pnl can be -ve
+        "exhausted":     today_pnl <= -daily_loss_cap,
+    }
+
+    # ── 6. Compose verdict signals ────────────────────────────────────
+    signals = []
+
+    ev = card.get("level_eval")
+    if ev:
+        s = ev["level_status"]
+        if s == "on":
+            signals.append({"kind": "level", "tone": "good",
+                            "label": f"ON published ${ev['matched_level']:g}"})
+        elif s == "near":
+            signals.append({"kind": "level", "tone": "warn",
+                            "label": f"Near ${ev['matched_level']:g} ({ev['matched_dist_pct']}% off)"})
+        else:
+            signals.append({"kind": "level", "tone": "bad",
+                            "label": "Off-level — entry doesn't match any published level"})
+
+        if ev["rr_verdict"] == "good":
+            signals.append({"kind": "rr", "tone": "good",
+                            "label": f"R:R {ev['rr_ratio']} — reward {ev['reward_pct']}% / risk {ev['risk_pct']}%"})
+        elif ev["rr_verdict"] == "fair":
+            signals.append({"kind": "rr", "tone": "warn",
+                            "label": f"R:R {ev['rr_ratio']} — fair, not great"})
+        elif ev["rr_verdict"] == "poor":
+            signals.append({"kind": "rr", "tone": "bad",
+                            "label": f"R:R {ev['rr_ratio']} — risk > reward"})
+        else:
+            signals.append({"kind": "rr", "tone": "warn",
+                            "label": "R:R incomplete — one side of the level grid is missing"})
+
+    bk = card.get("bucket")
+    if bk:
+        if bk["bucket"] == "mid_range":
+            signals.append({"kind": "bucket", "tone": "bad",
+                            "label": "Mid-range entry — your weakest class (61% WR, +18% ROI median)"})
+        elif bk["bucket"] == "ath_break":
+            signals.append({"kind": "bucket", "tone": "good",
+                            "label": "ATH-break setup — your highest-edge class (87% WR, +25% ROI median)"})
+        elif bk["bucket"] in ("near_resistance", "near_support"):
+            signals.append({"kind": "bucket", "tone": "good",
+                            "label": f"{bk['bucket'].replace('_',' ').title()} — historically your better class"})
+
+    uh = card["user_history"]
+    if uh["ticker_side_n"] >= 3:
+        if uh["ticker_side_wr"] is not None and uh["ticker_side_wr"] >= 70:
+            signals.append({"kind": "ticker", "tone": "good",
+                            "label": f"{ticker_u} {right}: {uh['ticker_side_wr']}% WR over {uh['ticker_side_n']} trades"})
+        elif uh["ticker_side_wr"] is not None and uh["ticker_side_wr"] < 40:
+            signals.append({"kind": "ticker", "tone": "bad",
+                            "label": f"{ticker_u} {right}: only {uh['ticker_side_wr']}% WR over {uh['ticker_side_n']} trades"})
+    elif uh["ticker_side_n"] == 0:
+        signals.append({"kind": "ticker", "tone": "warn",
+                        "label": f"No personal history on {ticker_u} {right}"})
+
+    he = card["hour_edge"]
+    if he["n"] >= 5 and he["win_rate"] is not None:
+        if he["win_rate"] >= 70:
+            signals.append({"kind": "hour", "tone": "good",
+                            "label": f"{he['hour']:02d}:00 entries: {he['win_rate']}% WR (n={he['n']})"})
+        elif he["win_rate"] < 50:
+            signals.append({"kind": "hour", "tone": "bad",
+                            "label": f"{he['hour']:02d}:00 entries underperform: {he['win_rate']}% WR (n={he['n']})"})
+
+    db = card["daily_budget"]
+    if db["exhausted"]:
+        signals.append({"kind": "budget", "tone": "bad",
+                        "label": f"Daily loss cap hit (${db['today_pnl']:+.0f}/${db['loss_cap']:.0f}) — stand down"})
+    elif db["today_pnl"] < -daily_loss_cap * 0.6:
+        signals.append({"kind": "budget", "tone": "warn",
+                        "label": f"Today's P&L ${db['today_pnl']:+.0f} — ${db['remaining']:.0f} budget remaining"})
+
+    # ── 7. Overall verdict — majority tone wins, with explicit rules ──
+    bad_count  = sum(1 for s in signals if s["tone"] == "bad")
+    good_count = sum(1 for s in signals if s["tone"] == "good")
+    warn_count = sum(1 for s in signals if s["tone"] == "warn")
+
+    if bad_count >= 2 or db["exhausted"]:
+        overall = "stand_down"
+    elif bad_count >= 1 and good_count <= 1:
+        overall = "marginal"
+    elif good_count >= 2 and bad_count == 0:
+        overall = "strong"
+    elif good_count >= 1 and bad_count == 0:
+        overall = "ok"
+    else:
+        overall = "neutral"
+
+    card["signals"]   = signals
+    card["verdict"]   = overall
+    card["counts"]    = {"good": good_count, "warn": warn_count, "bad": bad_count}
+    return card
+
+
+# ─── Equity curve + drawdown ─────────────────────────────────────────────
+# Cumulative realized $ over trade exits, with running peak and drawdown.
+# Powers the chart on /analytics/pnl.
+
+def equity_curve(range_key: str = "all") -> dict:
+    """Cumulative realized P&L per closed trade, plus drawdown analysis."""
+    trades = closed_trades(limit=5000, range_key=range_key)
+    # Sort by realization time (last exit), falling back to entry
+    trades.sort(key=lambda t: t.get("last_exit_ts") or t.get("first_entry_ts") or "")
+
+    cum: float = 0
+    peak: float = 0
+    peak_at: Optional[str] = None
+    max_dd: float = 0
+    max_dd_at: Optional[str] = None
+    max_dd_peak_at: Optional[str] = None
+    series: list[dict] = []
+
+    for t in trades:
+        ts = t.get("last_exit_ts") or t.get("first_entry_ts")
+        if not ts:
+            continue
+        pnl = float(t.get("realized_pnl") or 0)
+        cum += pnl
+        if cum > peak:
+            peak = cum
+            peak_at = ts[:10]
+        dd = cum - peak    # always <= 0
+        if dd < max_dd:
+            max_dd = dd
+            max_dd_at = ts[:10]
+            max_dd_peak_at = peak_at
+        series.append({
+            "ts":         ts,
+            "date":       ts[:10],
+            "trade_pnl":  round(pnl, 0),
+            "cum_pnl":    round(cum, 0),
+            "peak":       round(peak, 0),
+            "drawdown":   round(dd, 0),
+            "ticker":     t.get("ticker"),
+            "intent_id":  t.get("intent_id"),
+        })
+
+    # Top 3 drawdowns — each starts at a peak and ends at the trough
+    # before the next peak (or end-of-series). Sorted by magnitude.
+    drawdowns: list[dict] = []
+    if series:
+        i = 0
+        n = len(series)
+        while i < n:
+            # Find next peak (cum_pnl equals peak at that point)
+            while i < n and series[i]["cum_pnl"] != series[i]["peak"]:
+                i += 1
+            if i >= n - 1:
+                break
+            peak_idx = i
+            # Walk until cum_pnl reaches peak again or end
+            peak_val = series[i]["cum_pnl"]
+            trough_idx = i
+            trough_val = peak_val
+            j = i + 1
+            while j < n and series[j]["cum_pnl"] < peak_val:
+                if series[j]["cum_pnl"] < trough_val:
+                    trough_val = series[j]["cum_pnl"]
+                    trough_idx = j
+                j += 1
+            if trough_val < peak_val:
+                drawdowns.append({
+                    "peak_date":    series[peak_idx]["date"],
+                    "trough_date":  series[trough_idx]["date"],
+                    "recovery_date": series[j]["date"] if j < n else None,
+                    "peak_val":     series[peak_idx]["cum_pnl"],
+                    "trough_val":   trough_val,
+                    "drop":         round(trough_val - peak_val, 0),
+                    "n_trades":     trough_idx - peak_idx,
+                })
+            i = j if j > i else i + 1
+    drawdowns.sort(key=lambda d: d["drop"])  # most negative first
+
+    return {
+        "series":            series,
+        "n_trades":          len(series),
+        "current_pnl":       round(cum, 0),
+        "peak":              round(peak, 0),
+        "peak_at":           peak_at,
+        "current_drawdown":  round(cum - peak, 0),
+        "max_drawdown":      round(max_dd, 0),
+        "max_drawdown_at":   max_dd_at,
+        "max_dd_peak_at":    max_dd_peak_at,
+        "top_drawdowns":     drawdowns[:3],
+    }
+
+
+# ─── Cohort benchmarking ─────────────────────────────────────────────────
+# Compares the user's per-trade metrics against the 742-row reference cohort
+# (loaded into reference_trades from external trader books). Two sides
+# computed identically, then surfaced side-by-side.
+
+def _outcome_stats_for(rows: list[dict],
+                       roi_key: str,
+                       win_predicate) -> dict:
+    """Generic stat block: win rate, median ROI, median MFE, median capture."""
+    n = len(rows)
+    if n == 0:
+        return {"n": 0, "win_rate": None, "median_roi": None,
+                "median_mfe": None, "median_mae": None, "median_capture": None}
+    wins = sum(1 for r in rows if win_predicate(r))
+
+    def _med(key):
+        vals = [r.get(key) for r in rows if r.get(key) is not None]
+        return round(median(vals), 1) if vals else None
+
+    rois = [r.get(roi_key) for r in rows if r.get(roi_key) is not None]
+    mfes = [r.get("mfe_in_pct") for r in rows if r.get("mfe_in_pct") is not None]
+    maes = [r.get("mae_in_pct") for r in rows if r.get("mae_in_pct") is not None]
+    # Capture computed per-trade then medianed
+    captures = []
+    for r in rows:
+        m = r.get("mfe_in_pct")
+        actual = r.get(roi_key)
+        if m is not None and m > 0 and actual is not None:
+            captures.append(max(0.0, min(100.0, actual / m * 100.0)))
+
+    return {
+        "n":              n,
+        "win_rate":       round(wins / n * 100, 1),
+        "median_roi":     round(median(rois), 1) if rois else None,
+        "median_mfe":     round(median(mfes), 1) if mfes else None,
+        "median_mae":     round(median(maes), 1) if maes else None,
+        "median_capture": round(median(captures), 1) if captures else None,
+    }
+
+
+def _reference_rows(range_key: str = "all") -> list[dict]:
+    """Return reference_trades rows as plain dicts (fully_closed only)."""
+    with _connect() as conn:
+        rows = conn.execute("""
+            SELECT * FROM reference_trades
+            WHERE status = 'fully_closed'
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cohort_benchmark(range_key: str = "all") -> dict:
+    """User vs. cohort metrics, overall + by DTE bucket + by side."""
+    user_trades = closed_trades(limit=5000, range_key=range_key)
+    cohort_rows = _reference_rows(range_key=range_key)
+
+    # Normalize keys so _outcome_stats_for can read both via the same call.
+    # User: actual_pct (already %)  ·  Cohort: realized_roi (also %)
+    def _user_win(r):  return (r.get("realized_pnl") or 0) > 0
+    def _coh_win(r):   return (r.get("realized_roi") or 0) > 0
+
+    def _dte_bucket(d):
+        if d is None:     return None
+        try: d = int(d)
+        except (TypeError, ValueError): return None
+        if d == 0:        return "0DTE"
+        if d <= 2:        return "1–2"
+        if d <= 7:        return "3–7"
+        return "8+"
+
+    # Add dte to user trades for bucketing
+    enriched_user = []
+    for t in user_trades:
+        fe = t.get("first_entry_ts")
+        exp = t.get("expiry")
+        dte_v = None
+        if fe and exp:
+            try:
+                dte_v = (date.fromisoformat(str(exp)[:10])
+                         - date.fromisoformat(fe[:10])).days
+            except (TypeError, ValueError):
+                pass
+        enriched_user.append({**t, "_dte_bucket": _dte_bucket(dte_v)})
+
+    enriched_coh = [
+        {**r, "_dte_bucket": _dte_bucket(r.get("dte"))}
+        for r in cohort_rows
+    ]
+
+    # Overall
+    overall = {
+        "user":   _outcome_stats_for(enriched_user, "actual_pct",    _user_win),
+        "cohort": _outcome_stats_for(enriched_coh,  "realized_roi",  _coh_win),
+    }
+
+    def _delta(u, c):
+        if u is None or c is None:
+            return None
+        return round(u - c, 1)
+    overall["delta"] = {
+        k: _delta(overall["user"].get(k), overall["cohort"].get(k))
+        for k in ("win_rate", "median_roi", "median_mfe", "median_mae", "median_capture")
+    }
+
+    # By DTE bucket
+    by_dte = []
+    for b in ("0DTE", "1–2", "3–7", "8+"):
+        u_rows = [r for r in enriched_user if r["_dte_bucket"] == b]
+        c_rows = [r for r in enriched_coh  if r["_dte_bucket"] == b]
+        u = _outcome_stats_for(u_rows, "actual_pct",   _user_win)
+        c = _outcome_stats_for(c_rows, "realized_roi", _coh_win)
+        delta = {k: _delta(u.get(k), c.get(k))
+                 for k in ("win_rate", "median_roi", "median_mfe", "median_capture")}
+        by_dte.append({"bucket": b, "user": u, "cohort": c, "delta": delta})
+
+    # By side (Calls / Puts)
+    by_side = []
+    for side, label in (("C", "Calls"), ("P", "Puts")):
+        u_rows = [r for r in enriched_user if r.get("right") == side]
+        c_rows = [r for r in enriched_coh  if r.get("right") == side]
+        u = _outcome_stats_for(u_rows, "actual_pct",   _user_win)
+        c = _outcome_stats_for(c_rows, "realized_roi", _coh_win)
+        delta = {k: _delta(u.get(k), c.get(k))
+                 for k in ("win_rate", "median_roi", "median_mfe", "median_capture")}
+        by_side.append({"side": side, "label": label, "user": u, "cohort": c, "delta": delta})
+
+    # By sector — pick the top sectors by combined headcount
+    sector_counts: dict[str, int] = defaultdict(int)
+    for r in enriched_user + enriched_coh:
+        s = r.get("sector")
+        if s:
+            sector_counts[s] += 1
+    top_sectors = [s for s, _ in sorted(sector_counts.items(), key=lambda x: -x[1])[:6]]
+
+    by_sector = []
+    for sec in top_sectors:
+        u_rows = [r for r in enriched_user if r.get("sector") == sec]
+        c_rows = [r for r in enriched_coh  if r.get("sector") == sec]
+        u = _outcome_stats_for(u_rows, "actual_pct",   _user_win)
+        c = _outcome_stats_for(c_rows, "realized_roi", _coh_win)
+        delta = {k: _delta(u.get(k), c.get(k))
+                 for k in ("win_rate", "median_roi", "median_mfe", "median_capture")}
+        by_sector.append({"sector": sec, "user": u, "cohort": c, "delta": delta})
+
+    return {
+        "range_key":   range_key,
+        "n_user":      len(user_trades),
+        "n_cohort":    len(cohort_rows),
+        "overall":     overall,
+        "by_dte":      by_dte,
+        "by_side":     by_side,
+        "by_sector":   by_sector,
+    }
