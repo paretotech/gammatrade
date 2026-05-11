@@ -214,184 +214,6 @@
 </div>
 {% endif %}
 
-<!-- Equity curve + drawdown — per-trade cumulative realized $ -->
-{% if equity and equity.series %}
-<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6"
-     x-data='equityCurve({{ equity | tojson }})'
-     x-init="render()">
-    <div class="flex items-baseline justify-between mb-3">
-        <h2 class="text-[15px] font-semibold text-stone-700">Equity curve · all closed trades</h2>
-        <span class="text-[11px] text-stone-500">{{ equity.n_trades }} trades</span>
-    </div>
-
-    {# Stat strip — current P&L, peak, current drawdown, max drawdown #}
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-[12px]">
-        <div>
-            <div class="text-[10px] uppercase tracking-wider text-stone-500">Current P&amp;L</div>
-            <div class="mono text-lg font-semibold
-                {% if equity.current_pnl > 0 %}text-emerald-700
-                {% elif equity.current_pnl < 0 %}text-red-700{% endif %}">
-                {% if equity.current_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(equity.current_pnl) }}
-            </div>
-        </div>
-        <div>
-            <div class="text-[10px] uppercase tracking-wider text-stone-500">Peak</div>
-            <div class="mono text-lg font-semibold text-emerald-700">
-                +${{ "%.0f"|format(equity.peak) }}
-            </div>
-            <div class="text-[10px] mono text-stone-400">{{ equity.peak_at }}</div>
-        </div>
-        <div>
-            <div class="text-[10px] uppercase tracking-wider text-stone-500">From peak</div>
-            <div class="mono text-lg font-semibold
-                {% if equity.current_drawdown == 0 %}text-emerald-700
-                {% else %}text-amber-700{% endif %}">
-                {% if equity.current_drawdown == 0 %}at peak{% else %}${{ "%.0f"|format(equity.current_drawdown) }}{% endif %}
-            </div>
-        </div>
-        <div>
-            <div class="text-[10px] uppercase tracking-wider text-stone-500">Max drawdown</div>
-            <div class="mono text-lg font-semibold text-red-700">
-                ${{ "%.0f"|format(equity.max_drawdown) }}
-            </div>
-            <div class="text-[10px] mono text-stone-400">{{ equity.max_drawdown_at }}</div>
-        </div>
-    </div>
-
-    {# The chart itself #}
-    <div class="relative" style="height: 240px;">
-        <canvas x-ref="canvas"></canvas>
-    </div>
-
-    {# Top-3 drawdown periods, click-through nothing for now #}
-    {% if equity.top_drawdowns %}
-    <div class="mt-4 pt-3 border-t border-stone-100">
-        <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium mb-2">
-            Worst drawdown periods
-        </div>
-        <table class="w-full text-[11px]">
-            <thead class="text-[10px] uppercase tracking-wider text-stone-500">
-                <tr>
-                    <th class="text-left py-1 font-medium">Peak</th>
-                    <th class="text-left py-1 font-medium">Trough</th>
-                    <th class="text-left py-1 font-medium">Recovered</th>
-                    <th class="text-right py-1 font-medium">Trades to trough</th>
-                    <th class="text-right py-1 font-medium">Drop</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-stone-100">
-                {% for dd in equity.top_drawdowns %}
-                <tr>
-                    <td class="py-1 mono text-stone-500">{{ dd.peak_date }}</td>
-                    <td class="py-1 mono text-stone-500">{{ dd.trough_date }}</td>
-                    <td class="py-1 mono text-stone-500">
-                        {% if dd.recovery_date %}{{ dd.recovery_date }}{% else %}<span class="text-amber-700">ongoing</span>{% endif %}
-                    </td>
-                    <td class="py-1 mono text-right text-stone-500">{{ dd.n_trades }}</td>
-                    <td class="py-1 mono text-right text-red-700 font-medium">${{ "%.0f"|format(dd.drop) }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
-</div>
-
-<!-- Chart.js (this page only — adapter not needed since we use linear axis) -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script>
-function equityCurve(equity) {
-    return {
-        equity,
-        _chart: null,
-        render() {
-            const ctx = this.$refs.canvas;
-            if (!ctx || !window.Chart || !this.equity.series.length) return;
-
-            // Each point = one trade exit. Plot cum_pnl as the main line and
-            // peak as a faded step above it. Drawdown is the gap between.
-            const labels = this.equity.series.map((p, i) => i);
-            const cumData = this.equity.series.map(p => p.cum_pnl);
-            const peakData = this.equity.series.map(p => p.peak);
-
-            if (this._chart) this._chart.destroy();
-            this._chart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels,
-                    datasets: [
-                        {
-                            label: 'Peak',
-                            data: peakData,
-                            borderColor: 'rgba(120, 113, 108, 0.4)',
-                            borderWidth: 1,
-                            borderDash: [3, 3],
-                            pointRadius: 0,
-                            stepped: true,
-                            fill: false,
-                        },
-                        {
-                            label: 'Cum P&L',
-                            data: cumData,
-                            borderColor: 'rgb(5, 150, 105)',
-                            backgroundColor: 'rgba(16, 185, 129, 0.08)',
-                            borderWidth: 1.5,
-                            pointRadius: 0,
-                            pointHoverRadius: 4,
-                            tension: 0.1,
-                            fill: true,
-                        },
-                    ],
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'nearest', intersect: false, axis: 'x' },
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                title: (items) => {
-                                    if (!items.length) return '';
-                                    const i = items[0].dataIndex;
-                                    const p = equity.series[i];
-                                    return p.date + ' · ' + p.ticker;
-                                },
-                                label: (item) => {
-                                    const i = item.dataIndex;
-                                    const p = equity.series[i];
-                                    return [
-                                        'Trade P&L  ' + (p.trade_pnl >= 0 ? '+$' : '-$') + Math.abs(p.trade_pnl),
-                                        'Cumulative ' + (p.cum_pnl >= 0 ? '+$' : '-$') + Math.abs(p.cum_pnl),
-                                        'Drawdown   ' + (p.drawdown === 0 ? 'at peak' : '$' + p.drawdown),
-                                    ];
-                                },
-                            },
-                        },
-                    },
-                    scales: {
-                        x: {
-                            display: false,
-                            grid: { display: false },
-                        },
-                        y: {
-                            grid: { color: 'rgba(0,0,0,0.04)' },
-                            ticks: {
-                                font: { size: 10 },
-                                color: 'rgb(120, 113, 108)',
-                                callback: (v) => '$' + v.toFixed(0),
-                            },
-                        },
-                    },
-                },
-            });
-        },
-    };
-}
-</script>
-{% endif %}
-
 <!-- Monthly calendar — Notion-style: light bg, no color blocks, color via text only -->
 {% if calendar %}
 {# The prev/next links save the current scroll Y to sessionStorage right before
@@ -476,46 +298,150 @@ function equityCurve(equity) {
 </div>
 {% endif %}
 
-<!-- Cumulative P&L sparkline -->
-<div class="bg-white border border-stone-200 rounded-lg p-5">
-    <div class="flex items-baseline justify-between mb-4">
-        <h2 class="text-[15px] font-semibold text-stone-700">Cumulative P&L · last 30 days</h2>
-        <span class="text-[11px] text-stone-500">{{ series|length }} trading-day buckets</span>
+<!-- Equity curve + drawdown — per-trade cumulative realized $ -->
+{% if equity and equity.series %}
+<div class="bg-white border border-stone-200 rounded-lg p-5"
+     x-data='equityCurve({{ equity | tojson }})'
+     x-init="render()">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Equity curve · all closed trades</h2>
+        <span class="text-[11px] text-stone-500">{{ equity.n_trades }} trades</span>
     </div>
 
-    {% if series %}
-    {% set max_cum = series | map(attribute='cumulative') | max %}
-    {% set min_cum = series | map(attribute='cumulative') | min %}
-    {% set range_cum = (max_cum - min_cum) if (max_cum - min_cum) > 0 else 1 %}
-    <svg viewBox="0 0 {{ series|length * 20 }} 80" class="w-full h-24" preserveAspectRatio="none">
-        {# Zero line #}
-        {% set zero_y = 80 - ((0 - min_cum) / range_cum * 80) %}
-        <line x1="0" y1="{{ zero_y }}" x2="{{ series|length * 20 }}" y2="{{ zero_y }}"
-              stroke="#d6d3d1" stroke-dasharray="2 2" stroke-width="0.5"></line>
-
-        {# Cumulative line #}
-        <polyline fill="none" stroke="#059669" stroke-width="1.5"
-            points="{% for p in series %}{{ loop.index0 * 20 + 10 }},{{ 80 - ((p.cumulative - min_cum) / range_cum * 80) }} {% endfor %}" />
-
-        {# Daily bars (subtle) #}
-        {% for p in series %}
-            {% if p.pnl != 0 %}
-            <rect x="{{ loop.index0 * 20 + 6 }}" y="{{ zero_y if p.pnl > 0 else zero_y }}"
-                  width="8" height="{{ (p.pnl|abs) / range_cum * 80 }}"
-                  transform="{% if p.pnl < 0 %}translate(0, 0){% else %}translate(0, -{{ (p.pnl|abs) / range_cum * 80 }}){% endif %}"
-                  fill="{% if p.pnl > 0 %}#10b98133{% else %}#ef444433{% endif %}"></rect>
-            {% endif %}
-        {% endfor %}
-    </svg>
-    <div class="flex justify-between text-[11px] mono text-stone-500 mt-2">
-        <span>{{ series[0].date }}</span>
-        <span>min ${{ "%.0f"|format(min_cum) }} · max ${{ "%.0f"|format(max_cum) }}</span>
-        <span>{{ series[-1].date }}</span>
+    {# Stat strip — current P&L, peak, current drawdown, max drawdown #}
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-[12px]">
+        <div>
+            <div class="text-[10px] uppercase tracking-wider text-stone-500">Current P&amp;L</div>
+            <div class="mono text-lg font-semibold
+                {% if equity.current_pnl > 0 %}text-emerald-700
+                {% elif equity.current_pnl < 0 %}text-red-700{% endif %}">
+                {% if equity.current_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(equity.current_pnl) }}
+            </div>
+        </div>
+        <div>
+            <div class="text-[10px] uppercase tracking-wider text-stone-500">Peak</div>
+            <div class="mono text-lg font-semibold text-emerald-700">
+                +${{ "%.0f"|format(equity.peak) }}
+            </div>
+            <div class="text-[10px] mono text-stone-400">{{ equity.peak_at }}</div>
+        </div>
+        <div>
+            <div class="text-[10px] uppercase tracking-wider text-stone-500">From peak</div>
+            <div class="mono text-lg font-semibold
+                {% if equity.current_drawdown == 0 %}text-emerald-700
+                {% else %}text-amber-700{% endif %}">
+                {% if equity.current_drawdown == 0 %}at peak{% else %}${{ "%.0f"|format(equity.current_drawdown) }}{% endif %}
+            </div>
+        </div>
+        <div>
+            <div class="text-[10px] uppercase tracking-wider text-stone-500">Max drawdown</div>
+            <div class="mono text-lg font-semibold text-red-700">
+                ${{ "%.0f"|format(equity.max_drawdown) }}
+            </div>
+            <div class="text-[10px] mono text-stone-400">{{ equity.max_drawdown_at }}</div>
+        </div>
     </div>
-    {% else %}
-    <p class="text-sm text-stone-500 text-center py-8">No closed trades yet.</p>
+
+    <div class="relative" style="height: 240px;">
+        <canvas x-ref="canvas"></canvas>
+    </div>
+
+    {% if equity.top_drawdowns %}
+    <div class="mt-4 pt-3 border-t border-stone-100">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium mb-2">
+            Worst drawdown periods
+        </div>
+        <table class="w-full text-[11px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500">
+                <tr>
+                    <th class="text-left py-1 font-medium">Peak</th>
+                    <th class="text-left py-1 font-medium">Trough</th>
+                    <th class="text-left py-1 font-medium">Recovered</th>
+                    <th class="text-right py-1 font-medium">Trades to trough</th>
+                    <th class="text-right py-1 font-medium">Drop</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for dd in equity.top_drawdowns %}
+                <tr>
+                    <td class="py-1 mono text-stone-500">{{ dd.peak_date }}</td>
+                    <td class="py-1 mono text-stone-500">{{ dd.trough_date }}</td>
+                    <td class="py-1 mono text-stone-500">
+                        {% if dd.recovery_date %}{{ dd.recovery_date }}{% else %}<span class="text-amber-700">ongoing</span>{% endif %}
+                    </td>
+                    <td class="py-1 mono text-right text-stone-500">{{ dd.n_trades }}</td>
+                    <td class="py-1 mono text-right text-red-700 font-medium">${{ "%.0f"|format(dd.drop) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {% endif %}
 </div>
+
+<!-- Chart.js loaded here since equity curve is the only chart on this page -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+function equityCurve(equity) {
+    return {
+        equity,
+        _chart: null,
+        render() {
+            const ctx = this.$refs.canvas;
+            if (!ctx || !window.Chart || !this.equity.series.length) return;
+            const labels = this.equity.series.map((_, i) => i);
+            const cumData = this.equity.series.map(p => p.cum_pnl);
+            const peakData = this.equity.series.map(p => p.peak);
+            if (this._chart) this._chart.destroy();
+            this._chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        { label: 'Peak', data: peakData,
+                          borderColor: 'rgba(120, 113, 108, 0.4)', borderWidth: 1,
+                          borderDash: [3, 3], pointRadius: 0, stepped: true, fill: false },
+                        { label: 'Cum P&L', data: cumData,
+                          borderColor: 'rgb(5, 150, 105)',
+                          backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                          borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
+                          tension: 0.1, fill: true },
+                    ],
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'nearest', intersect: false, axis: 'x' },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: {
+                            title: (items) => {
+                                if (!items.length) return '';
+                                const p = equity.series[items[0].dataIndex];
+                                return p.date + ' · ' + p.ticker;
+                            },
+                            label: (item) => {
+                                const p = equity.series[item.dataIndex];
+                                return [
+                                    'Trade P&L  ' + (p.trade_pnl >= 0 ? '+$' : '-$') + Math.abs(p.trade_pnl),
+                                    'Cumulative ' + (p.cum_pnl >= 0 ? '+$' : '-$') + Math.abs(p.cum_pnl),
+                                    'Drawdown   ' + (p.drawdown === 0 ? 'at peak' : '$' + p.drawdown),
+                                ];
+                            },
+                        }},
+                    },
+                    scales: {
+                        x: { display: false, grid: { display: false } },
+                        y: { grid: { color: 'rgba(0,0,0,0.04)' },
+                             ticks: { font: { size: 10 }, color: 'rgb(120, 113, 108)',
+                                      callback: (v) => '$' + v.toFixed(0) } },
+                    },
+                },
+            });
+        },
+    };
+}
+</script>
+{% endif %}
 
 {# Restore scroll position after a month-nav click. The prev/next links above
    stash window.scrollY into sessionStorage right before navigation; here we
