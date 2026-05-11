@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +22,37 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from automation import state
+
+
+# Parses TD's "Time In Trade" string like "24h1m", "5m", "1h30m", "2d4h".
+# Supports any combination of d/h/m segments in that order.
+_TIT_RE = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$")
+
+
+def _parse_time_in_trade(v) -> timedelta | None:
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if not s or s in ("-", "—", "nan"):
+        return None
+    m = _TIT_RE.match(s)
+    if not m:
+        return None
+    d, h, mn = m.groups()
+    if not any((d, h, mn)):
+        return None
+    return timedelta(days=int(d or 0), hours=int(h or 0), minutes=int(mn or 0))
+
+
+def _ts_plus(entry_ts_iso: str, delta: timedelta | None) -> str:
+    """Add a timedelta to an ISO 'YYYY-MM-DDTHH:MM:SS' string; return ISO."""
+    if delta is None:
+        return entry_ts_iso
+    try:
+        dt = datetime.fromisoformat(entry_ts_iso[:19])
+    except ValueError:
+        return entry_ts_iso
+    return (dt + delta).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _f(v):
@@ -206,10 +239,12 @@ def main(argv=None) -> int:
                 (f"{intent_id}_buy", intent_id, entry_ts, "BUY",
                  contracts, entry_price, 1))
 
-            # TP fills from columns "TP1 Exit" / "TP1 %" / "TP1 ROI" etc.
-            # Column names in the master log are inconsistent — some have a
-            # space before %, others don't (e.g. "TP1 %" but "TP2%"). Try
-            # both spellings so every tier gets its real qty.
+            # TP fills from columns "TP1 Exit" / "TP1 %" / "TP1 ROI" / "TP1 Time In Trade".
+            # Column-name quirk: some headers have a space before %, others
+            # don't ("TP1 %" but "TP2%"). Try both spellings.
+            # Timestamp: the master log stores "Time In Trade" (e.g. "24h1m")
+            # rather than an absolute exit timestamp. Add that delta to the
+            # entry ts so each TP fill gets a real chronologically-ordered ts.
             for tier in (1, 2, 3, 4):
                 exit_price = _f(r.get(f"TP{tier} Exit"))
                 if not exit_price:
@@ -217,10 +252,12 @@ def main(argv=None) -> int:
                 units_pct = _pct(r.get(f"TP{tier} %") or r.get(f"TP{tier}%"))
                 qty = max(1, round((units_pct or 0) / 100 * contracts)) if units_pct else 1
                 qty = min(qty, contracts)
+                tit = _parse_time_in_trade(r.get(f"TP{tier} Time In Trade"))
+                fill_ts = _ts_plus(entry_ts, tit)
                 conn.execute(
                     "INSERT INTO fills (fill_id, intent_id, ts, side, contracts, price, is_entry, tp_tier) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (f"{intent_id}_tp{tier}", intent_id, entry_ts, "SELL",
+                    (f"{intent_id}_tp{tier}", intent_id, fill_ts, "SELL",
                      qty, exit_price, 0, tier))
 
         inserted += 1
