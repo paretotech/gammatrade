@@ -67,45 +67,44 @@
                 <span x-text="errorMsg"></span>
             </div>
 
+            <!-- Capture summary — horizontal strip ABOVE the chart canvas.
+                 Stays inside the chart card so the stats and the visual sit
+                 together, but doesn't overlap the drawing area. -->
+            <div x-show="status === 'ok' && stats && (stats.realized_pct != null || stats.mfe_in_pct != null)"
+                 class="flex flex-wrap items-baseline gap-x-6 gap-y-1 mb-4 pb-3 border-b border-stone-100">
+                <div>
+                    <span class="text-stone-500 text-[10px] uppercase tracking-wider mr-1.5">Realized</span>
+                    <span class="mono text-sm font-semibold"
+                          x-show="stats.realized_pct != null"
+                          :class="stats.realized_pct >= 0 ? 'text-emerald-700' : 'text-red-700'"
+                          x-text="(stats.realized_pct >= 0 ? '+' : '') + stats.realized_pct?.toFixed(1) + '%'"></span>
+                    <span class="mono text-sm text-stone-400" x-show="stats.realized_pct == null">—</span>
+                </div>
+                <div>
+                    <span class="text-stone-500 text-[10px] uppercase tracking-wider mr-1.5">MFE in-trade</span>
+                    <span class="mono text-sm font-semibold text-fuchsia-700"
+                          x-text="stats.mfe_in_pct != null ? ('+' + stats.mfe_in_pct.toFixed(1) + '%') : '—'"></span>
+                </div>
+                <!-- Only show the to-expiry MFE pill when it's meaningfully higher
+                     than the in-trade MFE (>5 pts) AND happened well after exit. -->
+                <div x-show="stats.mfe_exp_pct != null
+                             && stats.mfe_exp_pct > (stats.mfe_in_pct || 0) + 5
+                             && (stats.days_to_peak || 0) > 0.2">
+                    <span class="text-stone-500 text-[10px] uppercase tracking-wider mr-1.5">MFE to-expiry</span>
+                    <span class="mono text-sm font-semibold text-fuchsia-700"
+                          x-text="'+' + stats.mfe_exp_pct?.toFixed(1) + '%'"></span>
+                    <span class="text-stone-400 text-[10px] mono ml-1"
+                          x-text="stats.days_to_peak ? ('+' + Math.round(stats.days_to_peak) + 'd') : ''"></span>
+                </div>
+                <div x-show="stats.capture_pct != null" class="ml-auto">
+                    <span class="text-stone-500 text-[10px] uppercase tracking-wider mr-1.5">Captured</span>
+                    <span class="mono text-sm font-semibold text-stone-900"
+                          x-text="Math.round(stats.capture_pct) + '%'"></span>
+                </div>
+            </div>
+
             <div x-show="status === 'ok'" class="relative" style="height: 280px;">
                 <canvas x-ref="canvas"></canvas>
-
-                <!-- Capture summary — floats top-right inside the chart -->
-                <div class="absolute top-2 right-2 bg-white/85 backdrop-blur-sm
-                            border border-stone-200 rounded px-2.5 py-1.5
-                            text-[11px] leading-tight shadow-sm pointer-events-none"
-                     x-show="stats && (stats.realized_pct != null || stats.mfe_in_pct != null)">
-                    <table class="mono">
-                        <tr>
-                            <td class="text-stone-500 pr-3">Realized</td>
-                            <td x-show="stats.realized_pct != null"
-                                :class="stats.realized_pct >= 0 ? 'text-emerald-700' : 'text-red-700'"
-                                x-text="(stats.realized_pct >= 0 ? '+' : '') + stats.realized_pct?.toFixed(1) + '%'"></td>
-                            <td x-show="stats.realized_pct == null" class="text-stone-400">—</td>
-                        </tr>
-                        <tr>
-                            <td class="text-stone-500 pr-3">MFE in-trade</td>
-                            <td class="text-fuchsia-700"
-                                x-text="stats.mfe_in_pct != null ? ('+' + stats.mfe_in_pct.toFixed(1) + '%') : '—'"></td>
-                        </tr>
-                        <!-- Only show the to-expiry MFE row when it's meaningfully higher
-                             than the in-trade MFE (>5 percentage points) AND happened at
-                             least 4 hours after the last exit — otherwise it's noise. -->
-                        <tr x-show="stats.mfe_exp_pct != null
-                                    && stats.mfe_exp_pct > (stats.mfe_in_pct || 0) + 5
-                                    && (stats.days_to_peak || 0) > 0.2">
-                            <td class="text-stone-500 pr-3">MFE to-expiry</td>
-                            <td class="text-fuchsia-700"
-                                x-text="'+' + stats.mfe_exp_pct?.toFixed(1) + '%' +
-                                        (stats.days_to_peak ? ' (+' + Math.round(stats.days_to_peak) + 'd)' : '')"></td>
-                        </tr>
-                        <tr x-show="stats.capture_pct != null" class="border-t border-stone-200">
-                            <td class="text-stone-500 pr-3 pt-0.5">Captured</td>
-                            <td class="text-stone-900 font-semibold pt-0.5"
-                                x-text="Math.round(stats.capture_pct) + '%'"></td>
-                        </tr>
-                    </table>
-                </div>
             </div>
 
             <!-- Marker legend -->
