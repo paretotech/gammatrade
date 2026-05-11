@@ -40,27 +40,38 @@ SYSTEM_PROMPT = """You are a trading strategy analyst for a retail options \
 trader who follows a level-based discretionary framework.
 
 Your job: analyze the trader's pregame plan against historical reference \
-trade data and the strategy guide, then give them an actionable read.
+trade data and the strategy guide, then output a structured per-pick verdict.
 
-Your response style:
-- Terse and action-first. Lead with the punchline. No hedging.
-- Use MEDIANS not means for per-trade outcomes (option returns are heavily \
-skewed; means are tail-noise).
-- Ground every claim in either historical stats provided OR named rules \
-from the strategy guide.
-- Never invent rules. If a thesis isn't backed by data, say so.
+PER-PICK OUTPUT — be RUTHLESSLY concise. Each field has a tight word cap.
+- plan         — the actual trade in ONE clause. ≤18 words. Entry condition \
++ structure (e.g. "ATM/1-OTM call on PDH reclaim above 700"). \
+No commentary, no rationale, just the trade.
+- invalidation — the ONE price or condition that kills it. ≤12 words. \
+(e.g. "falls below 700"). No "if X, do Y" — just the trigger.
+- edge         — historical stats as inline shorthand. Format: \
+"cohort +MED%/WR% (n=N) · you +MED%/WR% (n=N)". Use exact numbers from the \
+data block. If a side has no history, write "you n=0".
+- risk         — ONE sentence, ≤20 words. The single most important risk. \
+If personal track record is materially worse than cohort, lead with that.
+- reasoning    — OPTIONAL single short sentence (≤15 words) only when the \
+verdict needs context the four fields above don't carry. Skip otherwise.
 
-Default risk posture (override if user has configured differently):
-- Pre-FOMC (Tue → Wed 14:30 ET of FOMC week) and CPI release days are HARD \
-SKIPS. If today qualifies, surface that prominently.
-- Familiar tickers only. Unfamiliar tickers default to WATCH-ONLY.
+DAY READ
+- headline — one sentence, ≤15 words.
+- regime_assessment — ONE sentence, ≤20 words.
+
+OPERATIONAL NOTES
+- Maximum 3 bullets. Each ≤18 words. Bullets that just restate a pick are wasted.
+
+OTHER RULES
+- Use MEDIANS not means for per-trade outcomes.
+- Never invent rules. Cite named strategy-guide rules only when relevant.
+- Pre-FOMC (Tue → Wed 14:30 ET of FOMC week) and CPI release days = HARD SKIP. \
+Surface in blackouts_or_warnings.
+- Unfamiliar tickers default to WATCH (verdict) and skip (size).
 - Index strikes (QQQ/SPX/SPY): ATM or 1-OTM only.
-- Sized-for-zero is the default risk frame.
 
-Output a single JSON object matching the schema. Be concise.
-
-If a strategy guide is provided below, cite specific rule names when they \
-apply. If not, base claims on historical stats only.
+Output a single JSON object matching the schema.
 
 ═══════════════════ STRATEGY GUIDE ═══════════════════
 
@@ -105,25 +116,34 @@ OUTPUT_SCHEMA = {
                     "ticker": {"type": "string"},
                     "verdict": {
                         "type": "string",
-                        "enum": ["LIKE", "WATCH", "PASS"],
-                        "description": "Soft lean per memory: never absolute GO/PASS verdicts."
-                    },
-                    "reasoning": {
-                        "type": "string",
-                        "description": "2-3 sentences. Cite historical median ROI / win rate / n where relevant. Reference named rules."
-                    },
-                    "key_risks": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Top 1-3 specific risks for this pick."
+                        "enum": ["LIKE", "WATCH", "PASS"]
                     },
                     "suggested_size": {
                         "type": "string",
-                        "enum": ["full", "half", "quarter", "skip"],
-                        "description": "Size suggestion based on confluence count + setup quality."
+                        "enum": ["full", "half", "quarter", "skip"]
+                    },
+                    "plan": {
+                        "type": "string",
+                        "description": "The trade in one clause. ≤18 words. Entry condition + structure only. No rationale."
+                    },
+                    "invalidation": {
+                        "type": "string",
+                        "description": "The single price or condition that kills the trade. ≤12 words."
+                    },
+                    "edge": {
+                        "type": "string",
+                        "description": "Cohort + personal stats inline, e.g. 'cohort +39%/99% (n=90) · you +23%/70% (n=20)'. Use 'n=0' if no history."
+                    },
+                    "risk": {
+                        "type": "string",
+                        "description": "The one risk that matters most. ≤20 words. Lead with personal-record divergence when relevant."
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "OPTIONAL one short sentence (≤15 words) only when plan/edge/risk don't carry the context."
                     }
                 },
-                "required": ["ticker", "verdict", "reasoning", "key_risks", "suggested_size"],
+                "required": ["ticker", "verdict", "suggested_size", "plan", "invalidation", "edge", "risk"],
                 "additionalProperties": False
             }
         },

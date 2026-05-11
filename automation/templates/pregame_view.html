@@ -117,7 +117,7 @@
     <div class="mb-4 space-y-2">
         {% for p in a.picks %}
         <div class="border border-stone-200 rounded-md px-3 py-2">
-            <div class="flex items-baseline gap-3 mb-1">
+            <div class="flex items-baseline gap-3 mb-2">
                 <span class="mono font-semibold">{{ p.ticker }}</span>
                 <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded
                     {% if p.verdict == 'LIKE' %}bg-emerald-50 text-emerald-700
@@ -125,11 +125,44 @@
                     {% else %}bg-red-50 text-red-700{% endif %}">{{ p.verdict }}</span>
                 <span class="text-[10px] uppercase tracking-wider text-stone-500">{{ p.suggested_size }} size</span>
             </div>
-            <div class="text-[12px] text-stone-700 leading-relaxed">{{ p.reasoning }}</div>
-            {% if p.key_risks %}
-            <div class="text-[11px] text-stone-500 mt-1.5">
-                Risks: {% for r in p.key_risks %}{{ r }}{% if not loop.last %} · {% endif %}{% endfor %}
-            </div>
+
+            {# New structured layout — used when the cached analysis carries the
+               plan/invalidation/edge/risk fields introduced in v0.3+. Old
+               cached entries still render via the fallback block below. #}
+            {% if p.plan %}
+            <dl class="grid gap-x-3 gap-y-1 text-[12px]"
+                style="grid-template-columns: max-content 1fr;">
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Plan</dt>
+                <dd class="text-stone-800">{{ p.plan }}</dd>
+
+                {% if p.invalidation %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Kill</dt>
+                <dd class="text-stone-800">{{ p.invalidation }}</dd>
+                {% endif %}
+
+                {% if p.edge %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Edge</dt>
+                <dd class="mono text-[11px] text-stone-700">{{ p.edge }}</dd>
+                {% endif %}
+
+                {% if p.risk %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Risk</dt>
+                <dd class="text-stone-600">{{ p.risk }}</dd>
+                {% endif %}
+
+                {% if p.reasoning %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-400 mt-0.5">Note</dt>
+                <dd class="text-stone-500 italic">{{ p.reasoning }}</dd>
+                {% endif %}
+            </dl>
+            {% else %}
+                {# Fallback for analyses cached before the structured schema. #}
+                <div class="text-[12px] text-stone-700 leading-relaxed">{{ p.reasoning }}</div>
+                {% if p.key_risks %}
+                <div class="text-[11px] text-stone-500 mt-1.5">
+                    Risks: {% for r in p.key_risks %}{{ r }}{% if not loop.last %} · {% endif %}{% endfor %}
+                </div>
+                {% endif %}
             {% endif %}
         </div>
         {% endfor %}
