@@ -255,7 +255,7 @@
                         <td class="px-5 py-2 mono font-medium" x-text="r.ticker"></td>
                         <template x-for="tier in [1, 2, 3]" :key="tier">
                             <td class="py-2 mono text-right text-stone-700"
-                                :class="r.tiers[tier].n === 0 ? 'text-stone-300' : ''"
+                                :class="[r.tiers[tier].n === 0 ? 'text-stone-300' : '', tier === 3 ? 'pr-5' : '']"
                                 x-html="fmtMins(r.tiers[tier])"></td>
                         </template>
                     </tr>
@@ -293,7 +293,7 @@
                         <td class="px-5 py-2 mono font-medium" x-text="r.ticker"></td>
                         <template x-for="tier in [1, 2, 3]" :key="tier">
                             <td class="py-2 mono text-right"
-                                :class="pctColor(r.tiers[tier])"
+                                :class="[pctColor(r.tiers[tier]), tier === 3 ? 'pr-5' : '']"
                                 x-html="fmtPct(r.tiers[tier])"></td>
                         </template>
                     </tr>
