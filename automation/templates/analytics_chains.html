@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+{# Detects "chase" chains: same ticker + side where each new leg's strike
+   is monotonic (≥ previous for calls, ≤ for puts), within a gap window
+   between consecutive legs. The first leg is the chain "starter".
+#}
+
+<div class="mb-4 flex items-baseline justify-between flex-wrap gap-3">
+    <div>
+        <h2 class="text-[15px] font-semibold text-stone-700">Chains</h2>
+        <p class="text-[12px] text-stone-500 mt-0.5">
+            Sequences of entries on the same ticker + side where calls walk strikes UP
+            and puts walk strikes DOWN. The first leg is the chain "starter"; the chain
+            ends when strike direction breaks or the time gap exceeds the threshold.
+        </p>
+    </div>
+    <div class="flex items-center gap-1 text-[12px]">
+        <span class="text-stone-500 mr-2">Max gap:</span>
+        {% for d in [2, 3, 5, 7, 14] %}
+        <a href="?range={{ range_key }}&amp;gap={{ d }}"
+           class="px-2 py-0.5 rounded border
+                  {% if gap_days == d %}border-emerald-600 text-emerald-700 font-medium bg-emerald-50
+                  {% else %}border-stone-200 text-stone-500 hover:text-stone-900{% endif %}">
+            {{ d }}d
+        </a>
+        {% endfor %}
+    </div>
+</div>
+
+{# Summary cards #}
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Multi-leg chains</div>
+        <div class="mono text-xl font-semibold text-stone-900">{{ data.summary.n_multi_leg }}</div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">
+            median {{ data.summary.median_legs or "—" }} legs · max {{ data.summary.max_legs }}
+        </div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Multi-leg total P&amp;L</div>
+        <div class="mono text-xl font-semibold
+            {% if data.summary.total_pnl_multi > 0 %}text-emerald-700
+            {% elif data.summary.total_pnl_multi < 0 %}text-red-700{% endif %}">
+            {% if data.summary.total_pnl_multi >= 0 %}+{% endif %}${{ "%.0f"|format(data.summary.total_pnl_multi) }}
+        </div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">across {{ data.summary.n_multi_leg }} chains</div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Solo trades</div>
+        <div class="mono text-xl font-semibold text-stone-900">{{ data.summary.n_singletons }}</div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">single-leg "chains"</div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Solo total P&amp;L</div>
+        <div class="mono text-xl font-semibold
+            {% if data.summary.total_pnl_solo > 0 %}text-emerald-700
+            {% elif data.summary.total_pnl_solo < 0 %}text-red-700{% endif %}">
+            {% if data.summary.total_pnl_solo >= 0 %}+{% endif %}${{ "%.0f"|format(data.summary.total_pnl_solo) }}
+        </div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">no follow-on legs</div>
+    </div>
+</div>
+
+{# Narrative #}
+{% if data.summary.n_multi_leg > 0 %}
+{% set multi_total = data.summary.total_pnl_multi %}
+{% set solo_total  = data.summary.total_pnl_solo %}
+<div class="mb-6 px-3 py-2 rounded text-[12px]
+    {% if multi_total > 0 and solo_total < 0 %}bg-emerald-50 text-emerald-800 border border-emerald-200
+    {% else %}bg-stone-50 text-stone-700 border border-stone-200{% endif %}">
+    {% if multi_total > 0 and solo_total < 0 %}
+        <span class="font-medium">Multi-leg chains carry your book.</span>
+        +${{ "%.0f"|format(multi_total) }} across {{ data.summary.n_multi_leg }} chains
+        vs ${{ "%.0f"|format(solo_total) }} from {{ data.summary.n_singletons }} solo trades —
+        when you commit to a setup and add legs, it pays.
+    {% else %}
+        <span class="font-medium">Chain rollup:</span>
+        {{ data.summary.n_multi_leg }} multi-leg chains (${{ "%.0f"|format(multi_total) }})
+        + {{ data.summary.n_singletons }} solos (${{ "%.0f"|format(solo_total) }}).
+    {% endif %}
+</div>
+{% endif %}
+
+{# Chain table — multi-leg first, sortable, expandable rows #}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden"
+     x-data='{
+        chains: {{ data.chains | tojson }},
+        showSolo: false,
+        expanded: null,
+        sortKey: "starter_date",
+        sortDir: -1,
+        sort(k) {
+            if (this.sortKey === k) this.sortDir = -this.sortDir;
+            else { this.sortKey = k; this.sortDir = -1; }
+            this.chains.sort((a, b) => {
+                const av = a[k] ?? -1e9, bv = b[k] ?? -1e9;
+                if (typeof av === "string") return this.sortDir * av.localeCompare(bv);
+                return this.sortDir * ((av > bv) - (av < bv));
+            });
+        },
+        arrow(k) { return this.sortKey === k ? (this.sortDir === -1 ? "↓" : "↑") : ""; },
+        toggle(c) {
+            const k = c.starter_id;
+            this.expanded = (this.expanded === k) ? null : k;
+        },
+        get visible() {
+            return this.showSolo ? this.chains : this.chains.filter(c => c.n_legs >= 2);
+        },
+        fmtDate(s) { return s ? s.slice(0,10) : "—"; },
+        fmtMoney(v) { return (v >= 0 ? "+" : "") + "$" + (v ?? 0).toFixed(0); },
+        fmtPct(v)   { return v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(1) + "%"; },
+        fmtStrike(s) { return (s % 1 === 0) ? s.toFixed(0) : s.toFixed(2); },
+     }'>
+    <div class="px-5 py-3 border-b border-stone-200 flex items-baseline justify-between">
+        <h3 class="text-[13px] font-semibold text-stone-700">Chains detected</h3>
+        <label class="text-[11px] text-stone-600 flex items-center gap-1.5">
+            <input type="checkbox" x-model="showSolo">
+            include solo (1-leg) chains
+        </label>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left px-5 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('starter_date')">
+                    Starter <span x-text="arrow('starter_date')"></span>
+                </th>
+                <th class="text-left  py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('ticker')">
+                    Ticker <span x-text="arrow('ticker')"></span>
+                </th>
+                <th class="text-left  py-2 font-medium">Side</th>
+                <th class="text-left  py-2 font-medium">Strike range</th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('n_legs')">
+                    Legs <span x-text="arrow('n_legs')"></span>
+                </th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('days_span')">
+                    Span <span x-text="arrow('days_span')"></span>
+                </th>
+                <th class="text-left  py-2 font-medium">Shape</th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('win_rate')">
+                    WR <span x-text="arrow('win_rate')"></span>
+                </th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('roi')">
+                    ROI <span x-text="arrow('roi')"></span>
+                </th>
+                <th class="text-right py-2 pr-5 font-medium cursor-pointer hover:text-stone-900" @click="sort('total_pnl')">
+                    Total P&amp;L <span x-text="arrow('total_pnl')"></span>
+                </th>
+            </tr>
+        </thead>
+        <template x-for="c in visible" :key="c.starter_id">
+            <tbody class="divide-y divide-stone-100">
+                <tr class="hover:bg-stone-50 cursor-pointer"
+                    :class="expanded === c.starter_id ? 'bg-stone-50' : ''"
+                    @click="toggle(c)">
+                    <td class="px-5 py-2 mono text-stone-500 text-[11px]">
+                        <span class="inline-block w-3 text-stone-400 text-[10px]"
+                              x-text="expanded === c.starter_id ? '▾' : '▸'"></span>
+                        <span x-text="fmtDate(c.starter_date)"></span>
+                    </td>
+                    <td class="py-2 mono font-medium" x-text="c.ticker"></td>
+                    <td class="py-2 text-[11px] uppercase tracking-wider"
+                        :class="c.side === 'C' ? 'text-emerald-700' : 'text-red-700'"
+                        x-text="c.side === 'C' ? 'CALL' : 'PUT'"></td>
+                    <td class="py-2 mono text-stone-700"
+                        x-text="fmtStrike(c.starter_strike) + c.side + ' → ' + fmtStrike(c.last_strike) + c.side"></td>
+                    <td class="py-2 mono text-right text-stone-700" x-text="c.n_legs"></td>
+                    <td class="py-2 mono text-right text-stone-500" x-text="(c.days_span ?? 0) + 'd'"></td>
+                    <td class="py-2 text-[11px] text-stone-600" x-text="c.shape"></td>
+                    <td class="py-2 mono text-right font-medium"
+                        :class="c.win_rate >= 70 ? 'text-emerald-700' : (c.win_rate < 50 ? 'text-red-700' : '')"
+                        x-text="c.win_rate + '%'"></td>
+                    <td class="py-2 mono text-right"
+                        :class="c.roi > 0 ? 'text-emerald-700' : (c.roi < 0 ? 'text-red-700' : '')"
+                        x-text="c.roi != null ? (c.roi >= 0 ? '+' : '') + c.roi + '%' : '—'"></td>
+                    <td class="py-2 mono text-right pr-5"
+                        :class="c.total_pnl > 0 ? 'text-emerald-600 font-medium' : (c.total_pnl < 0 ? 'text-red-600' : '')"
+                        x-text="fmtMoney(c.total_pnl)"></td>
+                </tr>
+
+                {# Expanded leg detail #}
+                <tr x-show="expanded === c.starter_id" x-cloak>
+                    <td colspan="10" class="px-5 py-3 bg-stone-50/60 border-t border-stone-100">
+                        <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium mb-2">
+                            <span x-text="c.n_legs"></span> leg<span x-show="c.n_legs !== 1">s</span>
+                            · entry total $<span x-text="c.total_cost.toFixed(0)"></span>
+                            · <span x-text="c.total_qty"></span> contracts entered
+                            · click any leg to open
+                        </div>
+                        <table class="w-full text-[11px]">
+                            <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+                                <tr>
+                                    <th class="text-left  py-1 font-medium">Entry</th>
+                                    <th class="text-left  py-1 font-medium">Exit</th>
+                                    <th class="text-left  py-1 font-medium">Strike</th>
+                                    <th class="text-left  py-1 font-medium">Expiry</th>
+                                    <th class="text-right py-1 font-medium">Qty</th>
+                                    <th class="text-right py-1 font-medium">Entry $</th>
+                                    <th class="text-right py-1 font-medium">Exit $</th>
+                                    <th class="text-right py-1 font-medium">Realized %</th>
+                                    <th class="text-right py-1 font-medium">MFE in</th>
+                                    <th class="text-right py-1 font-medium">Capture</th>
+                                    <th class="text-right py-1 font-medium">TPs</th>
+                                    <th class="text-right py-1 font-medium">P&amp;L</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-stone-200">
+                                <template x-for="leg in c.legs" :key="leg.intent_id">
+                                    <tr class="hover:bg-white cursor-pointer"
+                                        @click.stop="window.location.href='/trades/' + leg.intent_id">
+                                        <td class="py-1 mono text-stone-500"
+                                            x-text="leg.entry_ts ? leg.entry_ts.slice(0,16).replace('T',' ') : '—'"></td>
+                                        <td class="py-1 mono text-stone-500"
+                                            x-text="leg.exit_ts ? leg.exit_ts.slice(0,16).replace('T',' ') : '—'"></td>
+                                        <td class="py-1 mono" x-text="fmtStrike(leg.strike) + leg.right"></td>
+                                        <td class="py-1 mono text-stone-500" x-text="leg.expiry"></td>
+                                        <td class="py-1 mono text-right" x-text="leg.qty"></td>
+                                        <td class="py-1 mono text-right text-stone-700"
+                                            x-text="leg.avg_entry != null ? '$' + leg.avg_entry.toFixed(2) : '—'"></td>
+                                        <td class="py-1 mono text-right text-stone-700"
+                                            x-text="leg.avg_exit != null ? '$' + leg.avg_exit.toFixed(2) : '—'"></td>
+                                        <td class="py-1 mono text-right"
+                                            :class="leg.actual_pct > 0 ? 'text-emerald-700 font-medium' : (leg.actual_pct < 0 ? 'text-red-700' : '')"
+                                            x-text="fmtPct(leg.actual_pct)"></td>
+                                        <td class="py-1 mono text-right text-fuchsia-700"
+                                            x-text="fmtPct(leg.mfe_in_pct)"></td>
+                                        <td class="py-1 mono text-right text-stone-600"
+                                            x-text="leg.capture_pct != null ? leg.capture_pct + '%' : '—'"></td>
+                                        <td class="py-1 mono text-right text-stone-500 text-[10px]"
+                                            x-text="leg.tp_tiers_hit && leg.tp_tiers_hit.length ? leg.tp_tiers_hit.map(t => 'TP' + t).join('·') : '—'"></td>
+                                        <td class="py-1 mono text-right"
+                                            :class="leg.realized_pnl > 0 ? 'text-emerald-600' : (leg.realized_pnl < 0 ? 'text-red-600' : '')"
+                                            x-text="fmtMoney(leg.realized_pnl)"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>
+            </tbody>
+        </template>
+    </table>
+    <p x-show="visible.length === 0" class="px-5 py-8 text-center text-[12px] text-stone-400">
+        No chains in this range.
+    </p>
+</div>
+
+{% endblock %}

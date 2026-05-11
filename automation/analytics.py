@@ -2562,3 +2562,183 @@ def simulate_ladder(range_key: str = "all",
         "top_better":   top_better,
         "top_worse":    top_worse,
     }
+
+
+# ─── Chain analysis ─────────────────────────────────────────────────────
+# A "chain" is a sequence of entry trades on the same ticker + same side
+# (calls or puts) where the strike progression is monotonic in the chase
+# direction:
+#   - calls: each new leg has strike >= last leg's strike (chase up)
+#   - puts:  each new leg has strike <= last leg's strike (chase down)
+# A strike that breaks the monotonic direction starts a NEW chain.
+# A gap of more than `max_gap_days` between consecutive legs also breaks
+# the chain.
+#
+# Examples:
+#   META 2026-04-06 585C → ... → 2026-04-16 685C   (9 legs, one chain)
+#   META 2026-04-21 675C exp 04-24                  (new chain — strike dropped)
+#   TSLA 2026-04-15 375C → ... → 2026-04-17 407.5C (10 legs, one chain)
+#   TSLA 2026-05-05 405C exp 05-08                  (new chain — 18-day gap)
+
+def chain_analysis(range_key: str = "all",
+                   max_gap_days: int = 3) -> dict:
+    """Group trades into monotonic-strike chains per ticker × side.
+
+    `max_gap_days` is the calendar-day cutoff between consecutive legs
+    before the chain breaks. Default 3 captures "same wave of activity"
+    chains while breaking when the trader steps away for a long weekend
+    or more — matches the META Apr 6+8 cluster being one chain while
+    Apr 14+ becomes a separate chain.
+    """
+    trades = closed_trades(limit=5000, range_key=range_key)
+
+    # Bucket by (ticker, side) and sort each bucket chronologically
+    by_key: dict[tuple, list[dict]] = defaultdict(list)
+    for t in trades:
+        side = t.get("right")
+        if side not in ("C", "P"):
+            continue
+        by_key[(t["ticker"], side)].append(t)
+    for v in by_key.values():
+        v.sort(key=lambda x: x.get("first_entry_ts") or "")
+
+    chains: list[dict] = []
+    for (ticker, side), legs in by_key.items():
+        current: list[dict] = []
+        last_strike: Optional[float] = None
+        last_ts:     Optional[datetime] = None
+
+        def _close_chain():
+            if current:
+                chains.append(_chain_record(ticker, side, list(current)))
+
+        for leg in legs:
+            strike = float(leg.get("strike") or 0)
+            try:
+                ts = datetime.fromisoformat((leg.get("first_entry_ts") or "")[:19])
+            except ValueError:
+                ts = None
+
+            # Monotonicity check — only enforced from the 2nd leg onward
+            monotonic_ok = True
+            if last_strike is not None:
+                if side == "C":
+                    monotonic_ok = strike >= last_strike
+                else:    # P
+                    monotonic_ok = strike <= last_strike
+
+            # Time-gap check
+            gap_ok = True
+            if last_ts is not None and ts is not None:
+                gap_ok = (ts - last_ts).days <= max_gap_days
+
+            if monotonic_ok and gap_ok:
+                current.append(leg)
+            else:
+                _close_chain()
+                current = [leg]
+
+            last_strike = strike
+            last_ts = ts
+
+        _close_chain()
+
+    # Sort: most-recent starter first; chains with more legs ranked higher within same date
+    chains.sort(key=lambda c: (c["starter_date"], c["n_legs"]), reverse=True)
+
+    # Summary stats across all chains
+    n_chains = len(chains)
+    multi_leg = [c for c in chains if c["n_legs"] >= 2]
+    singletons = [c for c in chains if c["n_legs"] == 1]
+
+    summary = {
+        "n_chains":      n_chains,
+        "n_multi_leg":   len(multi_leg),
+        "n_singletons":  len(singletons),
+        "median_legs":   round(median([c["n_legs"] for c in multi_leg]), 1) if multi_leg else None,
+        "max_legs":      max((c["n_legs"] for c in chains), default=0),
+        "total_pnl_multi": round(sum(c["total_pnl"] for c in multi_leg), 0),
+        "total_pnl_solo":  round(sum(c["total_pnl"] for c in singletons), 0),
+    }
+
+    return {
+        "range_key":   range_key,
+        "max_gap_days": max_gap_days,
+        "n_trades":    len(trades),
+        "summary":     summary,
+        "chains":      chains,
+    }
+
+
+def _chain_record(ticker: str, side: str, legs: list[dict]) -> dict:
+    """Build the per-chain rollup dict."""
+    strikes  = [float(l.get("strike") or 0) for l in legs]
+    entries  = [l.get("first_entry_ts") or "" for l in legs]
+    exits    = [l.get("last_exit_ts")  or "" for l in legs]
+    starter  = legs[0]
+    last_leg = legs[-1]
+
+    total_pnl   = sum(l.get("realized_pnl") or 0 for l in legs)
+    total_qty   = sum(int(l.get("entry_qty") or 0) for l in legs)
+    total_cost  = sum(float(l.get("avg_entry") or 0) * int(l.get("entry_qty") or 0) * 100
+                      for l in legs)
+    wins        = sum(1 for l in legs if (l.get("realized_pnl") or 0) > 0)
+
+    # Chain shape — derived from strike progression
+    if len(legs) == 1:
+        shape = "solo"
+    elif all(s == strikes[0] for s in strikes):
+        shape = "scale (same strike)"
+    elif side == "C" and strikes[-1] > strikes[0]:
+        shape = "chase up"
+    elif side == "P" and strikes[-1] < strikes[0]:
+        shape = "chase down"
+    else:
+        shape = "drift"
+
+    return {
+        "ticker":         ticker,
+        "side":           side,
+        "n_legs":         len(legs),
+        "starter_id":     starter["intent_id"],
+        "starter_date":   (starter.get("first_entry_ts") or "")[:10],
+        "starter_strike": strikes[0],
+        "starter_expiry": starter.get("expiry"),
+        "last_date":      (last_leg.get("last_exit_ts") or last_leg.get("first_entry_ts") or "")[:10],
+        "last_strike":    strikes[-1],
+        "first_entry_ts": starter.get("first_entry_ts"),
+        "last_exit_ts":   last_leg.get("last_exit_ts"),
+        "min_strike":     min(strikes),
+        "max_strike":     max(strikes),
+        "n_unique_strikes": len(set(strikes)),
+        "total_pnl":      round(total_pnl, 0),
+        "total_qty":      total_qty,
+        "total_cost":     round(total_cost, 0),
+        "roi":            round(total_pnl / total_cost * 100, 1) if total_cost > 0 else None,
+        "wins":           wins,
+        "losses":         len(legs) - wins,
+        "win_rate":       round(wins / len(legs) * 100, 1),
+        "shape":          shape,
+        "days_span":      (datetime.fromisoformat(entries[-1][:19])
+                           - datetime.fromisoformat(entries[0][:19])).days
+                          if entries[0] and entries[-1] else None,
+        "legs": [
+            {
+                "intent_id":   l["intent_id"],
+                "entry_ts":    l.get("first_entry_ts"),
+                "exit_ts":     l.get("last_exit_ts"),
+                "strike":      float(l.get("strike") or 0),
+                "right":       l.get("right"),
+                "expiry":      l.get("expiry"),
+                "qty":         int(l.get("entry_qty") or 0),
+                "avg_entry":   l.get("avg_entry"),
+                "avg_exit":    l.get("avg_exit"),
+                "realized_pnl":l.get("realized_pnl") or 0,
+                "actual_pct":  l.get("actual_pct"),
+                "mfe_in_pct":  l.get("mfe_in_pct"),
+                "capture_pct": l.get("capture_pct"),
+                "tp_tiers_hit": l.get("tp_tiers_hit") or [],
+            }
+            for l in legs
+        ],
+    }

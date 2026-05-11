@@ -1653,6 +1653,32 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
     )
 
 
+@app.get("/analytics/chains", response_class=HTMLResponse)
+async def analytics_chains(
+    request: Request,
+    range: Optional[str] = None,
+    gap: Optional[int] = None,
+) -> HTMLResponse:
+    """Chain analysis — groups trades on same ticker+side with monotonic
+    strike progression (calls chase up / puts chase down) into chains."""
+    from . import analytics as _a
+    rng = _norm_range(range)
+    g = gap if gap in (2, 3, 5, 7, 14) else 3
+    return TEMPLATES.TemplateResponse(
+        "analytics_chains.html",
+        {
+            "request":    request,
+            "page_title": "Analytics",
+            "active_tab": "chains",
+            "tab_slug":   "chains",
+            "range_key":  rng,
+            "gap_days":   g,
+            "data":       _a.chain_analysis(range_key=rng, max_gap_days=g),
+            **nav_context(),
+        },
+    )
+
+
 @app.get("/analytics/ladders", response_class=HTMLResponse)
 async def analytics_ladders(
     request: Request,
