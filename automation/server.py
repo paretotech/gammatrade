@@ -1343,6 +1343,15 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
     if expiry_close_ms <= x_max:
         expiry_marker = {"t": expiry_close_ms, "y": float(df["c"].iloc[-1])}
 
+    # Reference levels for the chart's horizontal lines + the in-trade
+    # vs post-trade shading. Pull them off the markers we just built so
+    # the chart and the markers stay in sync (entry_price could differ
+    # from the SQL "first entry fill" if there are multiple entries).
+    last_exit_t = None
+    for m in markers:
+        if m["kind"] != "entry":   # last non-entry fill
+            last_exit_t = m["t"]   # markers are chronological — last wins
+
     return JSONResponse({
         "occ":           occ,
         "ticker":        raw_intent["ticker"],
@@ -1351,6 +1360,8 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         "expiry":        str(expiry_d),
         "x_min":         x_min,           # epoch ms — chart axis lower bound
         "x_max":         x_max,           # epoch ms — chart axis upper bound
+        "entry_price":   entry_price,     # for the Entry horizontal reference line
+        "last_exit_t":   last_exit_t,     # epoch ms — divides in-trade vs post-trade shading
         "bars":          bars_payload,    # [{t: epoch_ms, c: close}]
         "markers":       markers,         # [{t, y, kind, label, ...}]
         "mfe_marker":    mfe_marker,      # {t, y, kind:'mfe', label:'MFE peak'} or null

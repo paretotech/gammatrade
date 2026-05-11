@@ -329,9 +329,10 @@
     </div>
 </div>
 
-<!-- Chart.js + time-scale adapter (loaded only on this page) -->
+<!-- Chart.js + time-scale adapter + annotation plugin (this page only) -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 
 <script>
 function tradeChart(intentId) {
@@ -342,6 +343,9 @@ function tradeChart(intentId) {
         markers:   [],
         xMin:      null,
         xMax:      null,
+        entryPrice: null,
+        lastExitT:  null,
+        mfePrice:   null,
         errorMsg:  '',
         _chart:    null,
 
@@ -359,11 +363,14 @@ function tradeChart(intentId) {
                     }
                     return;
                 }
-                this.occ     = body.occ;
-                this.bars    = body.bars || [];
-                this.markers = body.markers || [];
-                this.xMin    = body.x_min ?? null;
-                this.xMax    = body.x_max ?? null;
+                this.occ        = body.occ;
+                this.bars       = body.bars || [];
+                this.markers    = body.markers || [];
+                this.xMin       = body.x_min ?? null;
+                this.xMax       = body.x_max ?? null;
+                this.entryPrice = body.entry_price ?? null;
+                this.lastExitT  = body.last_exit_t ?? null;
+                this.mfePrice   = body.mfe_marker?.y ?? null;
 
                 // MFE peak marker (single dot at the bar that printed the
                 // max favorable price over the lifecycle).
@@ -427,6 +434,76 @@ function tradeChart(intentId) {
                 };
             });
 
+            // Build annotation set: in-trade / post-trade shading + horizontal
+            // reference lines for entry price and MFE peak. Each is optional —
+            // we skip the ones we don't have data for.
+            const annotations = {};
+
+            // (a) In-trade region — light emerald tint from entry to last exit
+            if (this.xMin != null && this.lastExitT != null) {
+                annotations.inTradeBox = {
+                    type: 'box',
+                    xMin: this.xMin,
+                    xMax: this.lastExitT,
+                    backgroundColor: 'rgba(16, 185, 129, 0.06)',  // emerald-500 @ 6%
+                    borderWidth: 0,
+                    drawTime: 'beforeDatasetsDraw',
+                };
+            }
+            // (b) Post-trade region — light gray tint from last exit to end
+            if (this.lastExitT != null && this.xMax != null && this.lastExitT < this.xMax) {
+                annotations.postTradeBox = {
+                    type: 'box',
+                    xMin: this.lastExitT,
+                    xMax: this.xMax,
+                    backgroundColor: 'rgba(120, 113, 108, 0.05)', // stone-500 @ 5%
+                    borderWidth: 0,
+                    drawTime: 'beforeDatasetsDraw',
+                };
+            }
+            // (c) Entry-price reference line — dashed emerald
+            if (this.entryPrice != null) {
+                annotations.entryLine = {
+                    type: 'line',
+                    yMin: this.entryPrice,
+                    yMax: this.entryPrice,
+                    borderColor: 'rgba(5, 150, 105, 0.7)',       // emerald-600
+                    borderWidth: 1,
+                    borderDash: [4, 4],
+                    label: {
+                        display: true,
+                        content: `Entry $${this.entryPrice.toFixed(2)}`,
+                        position: 'start',
+                        backgroundColor: 'rgba(5, 150, 105, 0.9)',
+                        color: '#fff',
+                        font: { size: 10, weight: 'normal' },
+                        padding: { x: 4, y: 2 },
+                        yAdjust: -10,
+                    },
+                };
+            }
+            // (d) MFE-peak reference line — dashed fuchsia
+            if (this.mfePrice != null) {
+                annotations.mfeLine = {
+                    type: 'line',
+                    yMin: this.mfePrice,
+                    yMax: this.mfePrice,
+                    borderColor: 'rgba(217, 70, 239, 0.7)',      // fuchsia-500
+                    borderWidth: 1,
+                    borderDash: [4, 4],
+                    label: {
+                        display: true,
+                        content: `MFE $${this.mfePrice.toFixed(2)}`,
+                        position: 'end',
+                        backgroundColor: 'rgba(217, 70, 239, 0.9)',
+                        color: '#fff',
+                        font: { size: 10, weight: 'normal' },
+                        padding: { x: 4, y: 2 },
+                        yAdjust: -10,
+                    },
+                };
+            }
+
             if (this._chart) this._chart.destroy();
             this._chart = new Chart(ctx, {
                 type: 'line',
@@ -439,7 +516,7 @@ function tradeChart(intentId) {
                             borderColor: 'rgb(68, 64, 60)',  // stone-700
                             backgroundColor: 'rgba(68, 64, 60, 0.06)',
                             borderWidth: 1.5,
-                            fill: true,
+                            fill: false,           // shading comes from annotations now
                             pointRadius: 0,
                             tension: 0.15,
                         },
@@ -451,6 +528,7 @@ function tradeChart(intentId) {
                     maintainAspectRatio: false,
                     interaction: { mode: 'nearest', intersect: false },
                     plugins: {
+                        annotation: { annotations },
                         legend: { display: false },
                         tooltip: {
                             callbacks: {
