@@ -2581,16 +2581,38 @@ def simulate_ladder(range_key: str = "all",
 #   TSLA 2026-05-05 405C exp 05-08                  (new chain — 18-day gap)
 
 def chain_analysis(range_key: str = "all",
-                   max_gap_days: int = 3) -> dict:
-    """Group trades into monotonic-strike chains per ticker × side.
+                   max_roll_minutes: int = 60) -> dict:
+    """Group trades into roll chains per ticker × side.
 
-    `max_gap_days` is the calendar-day cutoff between consecutive legs
-    before the chain breaks. Default 3 captures "same wave of activity"
-    chains while breaking when the trader steps away for a long weekend
-    or more — matches the META Apr 6+8 cluster being one chain while
-    Apr 14+ becomes a separate chain.
+    A chain is a sequence where each new leg's BUY happens within
+    `max_roll_minutes` of an EXIT FILL of an earlier leg in the same
+    chain — i.e. you closed (or partial-closed) the prior position and
+    rolled the capital into the next strike. Plus the strike direction
+    must be monotonic in the chase direction:
+      - calls: strikes ≥ prior leg's strike
+      - puts:  strikes ≤ prior leg's strike
+    Breaks either condition → new chain starts.
     """
     trades = closed_trades(limit=5000, range_key=range_key)
+
+    # Fetch every exit fill timestamp for the trades, keyed by intent_id.
+    # One pass over the fills table; used to test roll-timing per leg.
+    intent_ids = [t["intent_id"] for t in trades]
+    exits_by_intent: dict[str, list[datetime]] = defaultdict(list)
+    if intent_ids:
+        placeholders = ",".join("?" for _ in intent_ids)
+        with _connect() as conn:
+            for r in conn.execute(
+                f"SELECT intent_id, ts FROM fills "
+                f"WHERE is_entry = 0 AND intent_id IN ({placeholders})",
+                intent_ids,
+            ).fetchall():
+                try:
+                    exits_by_intent[r["intent_id"]].append(
+                        datetime.fromisoformat(r["ts"][:19])
+                    )
+                except (ValueError, TypeError):
+                    continue
 
     # Bucket by (ticker, side) and sort each bucket chronologically
     by_key: dict[tuple, list[dict]] = defaultdict(list)
@@ -2605,8 +2627,8 @@ def chain_analysis(range_key: str = "all",
     chains: list[dict] = []
     for (ticker, side), legs in by_key.items():
         current: list[dict] = []
+        chain_exits: list[datetime] = []   # all exits from current chain's legs
         last_strike: Optional[float] = None
-        last_ts:     Optional[datetime] = None
 
         def _close_chain():
             if current:
@@ -2615,9 +2637,11 @@ def chain_analysis(range_key: str = "all",
         for leg in legs:
             strike = float(leg.get("strike") or 0)
             try:
-                ts = datetime.fromisoformat((leg.get("first_entry_ts") or "")[:19])
+                entry_dt = datetime.fromisoformat(
+                    (leg.get("first_entry_ts") or "")[:19]
+                )
             except ValueError:
-                ts = None
+                entry_dt = None
 
             # Monotonicity check — only enforced from the 2nd leg onward
             monotonic_ok = True
@@ -2627,19 +2651,28 @@ def chain_analysis(range_key: str = "all",
                 else:    # P
                     monotonic_ok = strike <= last_strike
 
-            # Time-gap check
-            gap_ok = True
-            if last_ts is not None and ts is not None:
-                gap_ok = (ts - last_ts).days <= max_gap_days
+            # Roll-timing check — must be within max_roll_minutes of an
+            # exit fill of an earlier chain leg. Skipped for the first
+            # leg of a chain.
+            roll_ok = True
+            if current:
+                if entry_dt is None or not chain_exits:
+                    roll_ok = False
+                else:
+                    roll_ok = any(
+                        0 <= (entry_dt - x).total_seconds() / 60.0 <= max_roll_minutes
+                        for x in chain_exits if x <= entry_dt
+                    )
 
-            if monotonic_ok and gap_ok:
+            if (not current) or (monotonic_ok and roll_ok):
                 current.append(leg)
+                chain_exits.extend(exits_by_intent.get(leg["intent_id"], []))
             else:
                 _close_chain()
                 current = [leg]
+                chain_exits = list(exits_by_intent.get(leg["intent_id"], []))
 
             last_strike = strike
-            last_ts = ts
 
         _close_chain()
 
@@ -2663,7 +2696,7 @@ def chain_analysis(range_key: str = "all",
 
     return {
         "range_key":   range_key,
-        "max_gap_days": max_gap_days,
+        "max_roll_minutes": max_roll_minutes,
         "n_trades":    len(trades),
         "summary":     summary,
         "chains":      chains,

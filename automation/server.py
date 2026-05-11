@@ -1657,23 +1657,25 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
 async def analytics_chains(
     request: Request,
     range: Optional[str] = None,
-    gap: Optional[int] = None,
+    roll: Optional[int] = None,
 ) -> HTMLResponse:
-    """Chain analysis — groups trades on same ticker+side with monotonic
-    strike progression (calls chase up / puts chase down) into chains."""
+    """Chain analysis — groups trades on same ticker+side where each new
+    leg's BUY happens within `roll` minutes of an EXIT FILL of an earlier
+    leg, plus monotonic strike progression (calls chase up / puts chase
+    down)."""
     from . import analytics as _a
     rng = _norm_range(range)
-    g = gap if gap in (2, 3, 5, 7, 14) else 3
+    m = roll if roll in (10, 30, 60, 120, 240) else 60
     return TEMPLATES.TemplateResponse(
         "analytics_chains.html",
         {
-            "request":    request,
-            "page_title": "Analytics",
-            "active_tab": "chains",
-            "tab_slug":   "chains",
-            "range_key":  rng,
-            "gap_days":   g,
-            "data":       _a.chain_analysis(range_key=rng, max_gap_days=g),
+            "request":         request,
+            "page_title":      "Analytics",
+            "active_tab":      "chains",
+            "tab_slug":        "chains",
+            "range_key":       rng,
+            "roll_minutes":    m,
+            "data":            _a.chain_analysis(range_key=rng, max_roll_minutes=m),
             **nav_context(),
         },
     )

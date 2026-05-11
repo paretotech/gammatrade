@@ -14,19 +14,20 @@
     <div>
         <h2 class="text-[15px] font-semibold text-stone-700">Chains</h2>
         <p class="text-[12px] text-stone-500 mt-0.5">
-            Sequences of entries on the same ticker + side where calls walk strikes UP
-            and puts walk strikes DOWN. The first leg is the chain "starter"; the chain
-            ends when strike direction breaks or the time gap exceeds the threshold.
+            Sequences of trades on the same ticker + side where each new leg's BUY
+            happens within the roll-window of an EXIT of an earlier leg (you closed
+            part of one position and rolled into the next strike). Calls walk strikes UP,
+            puts walk strikes DOWN.
         </p>
     </div>
     <div class="flex items-center gap-1 text-[12px]">
-        <span class="text-stone-500 mr-2">Max gap:</span>
-        {% for d in [2, 3, 5, 7, 14] %}
-        <a href="?range={{ range_key }}&amp;gap={{ d }}"
+        <span class="text-stone-500 mr-2">Roll window:</span>
+        {% for m in [10, 30, 60, 120, 240] %}
+        <a href="?range={{ range_key }}&amp;roll={{ m }}"
            class="px-2 py-0.5 rounded border
-                  {% if gap_days == d %}border-emerald-600 text-emerald-700 font-medium bg-emerald-50
+                  {% if roll_minutes == m %}border-emerald-600 text-emerald-700 font-medium bg-emerald-50
                   {% else %}border-stone-200 text-stone-500 hover:text-stone-900{% endif %}">
-            {{ d }}d
+            {{ m }}m
         </a>
         {% endfor %}
     </div>
