@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between flex-wrap gap-3 mb-6">
+    <div>
+        <h1 class="text-xl font-semibold text-stone-900">Journal</h1>
+        <p class="text-[12px] text-stone-500 mt-0.5">Daily end-of-day reflection. Compares the day's trades against the pregame plan.</p>
+    </div>
+    <a href="/journal/{{ today }}"
+       class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-stone-900 hover:bg-stone-700 text-white text-[12px] font-medium transition-colors">
+        {% if today_in_list %}Open today's entry{% else %}+ New entry for {{ today }}{% endif %}
+    </a>
+</div>
+
+{% if not entries %}
+<div class="bg-white border border-stone-200 rounded-lg p-12 text-center">
+    <p class="text-stone-500 text-sm">No journal entries yet.</p>
+    <p class="text-stone-400 text-[12px] mt-1">Click "New entry" above, or run <code class="mono">/gamma-eod</code> in Claude Code to auto-create one.</p>
+</div>
+{% else %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 border-b border-stone-200 text-[11px] uppercase tracking-wider text-stone-500">
+            <tr>
+                <th class="px-4 py-2 text-left font-medium w-32">Date</th>
+                <th class="px-4 py-2 text-left font-medium">Lessons</th>
+                <th class="px-4 py-2 text-right font-medium w-40">Last updated</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+        {% for e in entries %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-4 py-2.5 mono">
+                    <a href="/journal/{{ e.date }}" class="text-stone-900 hover:underline">{{ e.date }}</a>
+                </td>
+                <td class="px-4 py-2.5 text-stone-700">
+                    {% if e.lessons_snip %}{{ e.lessons_snip }}{% else %}<span class="text-stone-400">—</span>{% endif %}
+                </td>
+                <td class="px-4 py-2.5 text-right text-[11px] mono text-stone-500">
+                    {{ e.ts_updated[:16] if e.ts_updated else "—" }}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% endblock %}

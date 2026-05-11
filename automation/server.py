@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import state, telemetry, gates, pregame, triggers as triggers_mod, analysis
+from . import state, telemetry, gates, pregame, triggers as triggers_mod, analysis, journal
 from .rules import Rules, CONFIG_PATH
 from .orders import TradeIntent, get_broker
 
@@ -66,6 +66,7 @@ def nav_context() -> dict:
             ("/entries/new", "New Entry", "plus-circle"),
             ("/triggers", "Triggers", "zap"),
             ("/analytics", "Analytics", "bar-chart"),
+            ("/journal", "Journal", "edit-3"),
             ("/settings", "Settings", "sliders"),
         ],
         "kill_active": gates.kill_active(),
@@ -1551,6 +1552,76 @@ async def risk_save(
             **nav_context(),
         },
     )
+
+
+# ─── Journal ─────────────────────────────────────────────────────────────
+
+@app.get("/journal", response_class=HTMLResponse)
+async def journal_index(request: Request) -> HTMLResponse:
+    entries = journal.list_entries(limit=200)
+    today_str = date.today().isoformat()
+    today_in_list = any(e["date"] == today_str for e in entries)
+    return TEMPLATES.TemplateResponse(
+        "journal_index.html",
+        {
+            "request":       request,
+            "page_title":    "Journal",
+            "entries":       entries,
+            "today":         today_str,
+            "today_in_list": today_in_list,
+            **nav_context(),
+        },
+    )
+
+
+@app.get("/journal/{entry_date}", response_class=HTMLResponse)
+async def journal_view(request: Request, entry_date: str) -> HTMLResponse:
+    try:
+        date.fromisoformat(entry_date)
+    except ValueError:
+        return RedirectResponse(url="/journal", status_code=303)
+    entry = journal.load(entry_date) or {"date": entry_date}
+    summary = journal.day_summary(entry_date)
+    adherence = journal.adherence_for_day(entry_date)
+    return TEMPLATES.TemplateResponse(
+        "journal_entry.html",
+        {
+            "request":    request,
+            "page_title": f"Journal · {entry_date}",
+            "entry_date": entry_date,
+            "entry":      entry,
+            "summary":    summary,
+            "adherence":  adherence,
+            **nav_context(),
+        },
+    )
+
+
+@app.post("/journal/{entry_date}", response_class=HTMLResponse)
+async def journal_save(
+    request: Request,
+    entry_date: str,
+    plan_adherence: str = Form(""),
+    wins:           str = Form(""),
+    losses:         str = Form(""),
+    lessons:        str = Form(""),
+    mfe_gaps:       str = Form(""),
+    notes:          str = Form(""),
+) -> RedirectResponse:
+    try:
+        date.fromisoformat(entry_date)
+    except ValueError:
+        return RedirectResponse(url="/journal", status_code=303)
+    journal.save({
+        "date":           entry_date,
+        "plan_adherence": plan_adherence,
+        "wins":           wins,
+        "losses":         losses,
+        "lessons":        lessons,
+        "mfe_gaps":       mfe_gaps,
+        "notes":          notes,
+    })
+    return RedirectResponse(url=f"/journal/{entry_date}?saved=1", status_code=303)
 
 
 # ─── Settings (landing) ─────────────────────────────────────────────────────
