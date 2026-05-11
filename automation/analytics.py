@@ -2220,3 +2220,277 @@ def ladder_analysis(range_key: str = "all") -> dict:
         "completion_rows": completion_rows,
         "progression":    progression_comparison,
     }
+
+
+# ─── TP-ladder what-if simulator ──────────────────────────────────────────
+# Replays each trade's cached option bars against a user-supplied ladder
+# (TP1/TP2/TP3 %s, splits, optional initial stop, optional trail-to-entry
+# after TP1) and reports the simulated aggregate vs the actual outcomes.
+
+def simulate_ladder(range_key: str = "all",
+                    tp1_pct: float = 20.0,
+                    tp2_pct: float = 30.0,
+                    tp3_pct: float = 40.0,
+                    split1: float = 0.5,
+                    split2: float = 0.25,
+                    split3: float = 0.25,
+                    init_stop_pct: Optional[float] = None,
+                    trail_after_tp1: bool = False) -> dict:
+    """Replay cached option bars under a user-defined ladder and return
+    actual-vs-simulated aggregate stats.
+
+    TP percentages are expressed in % from entry (e.g. tp1_pct=20 means
+    +20% above entry price). Splits are fractions of entry quantity that
+    fill at each tier. Remaining position at expiry (or at the last cached
+    bar) closes at that bar's close.
+    """
+    from src import bars_store
+    from src.contract_symbols import build_occ_symbol
+
+    trades = closed_trades(limit=5000, range_key=range_key)
+    splits = [max(0, split1), max(0, split2), max(0, split3)]
+    if sum(splits) <= 0:
+        splits = [1.0, 0.0, 0.0]   # fall through to single-target
+
+    bars_cache: dict[str, Any] = {}
+    sim_results: list[dict] = []
+    skipped = 0
+
+    for t in trades:
+        entry_price = float(t.get("avg_entry") or 0)
+        entry_qty   = int(t.get("entry_qty") or 0)
+        entry_ts    = t.get("first_entry_ts")
+        expiry      = t.get("expiry")
+        ticker      = t.get("ticker")
+        right       = t.get("right")
+        strike      = t.get("strike")
+        if entry_price <= 0 or entry_qty <= 0 or not entry_ts or not expiry:
+            skipped += 1
+            continue
+        try:
+            occ = build_occ_symbol(
+                ticker, date.fromisoformat(str(expiry)[:10]),
+                right, float(strike),
+            )
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+
+        df = bars_cache.get(occ)
+        if df is None:
+            try:
+                df = bars_store.load_option_bars(occ)
+            except FileNotFoundError:
+                skipped += 1
+                continue
+            bars_cache[occ] = df
+        if df is None or df.empty:
+            skipped += 1
+            continue
+
+        # Window: entry time → expiry close (4pm ET on expiry day)
+        try:
+            entry_dt = datetime.fromisoformat(entry_ts[:19]).replace(tzinfo=_ET)
+        except ValueError:
+            skipped += 1
+            continue
+        entry_ms = int(entry_dt.timestamp() * 1000)
+        try:
+            exp_d = date.fromisoformat(str(expiry)[:10])
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+        expiry_close_dt = datetime.combine(
+            exp_d, datetime.min.time(), tzinfo=_ET,
+        ) + timedelta(hours=16)
+        expiry_ms = int(expiry_close_dt.timestamp() * 1000)
+
+        window = df[(df["t"] >= entry_ms) & (df["t"] <= expiry_ms)].copy()
+        if window.empty:
+            skipped += 1
+            continue
+
+        # TP price targets (entry price × (1 + tp_pct/100))
+        tp_prices = [
+            entry_price * (1 + tp1_pct / 100),
+            entry_price * (1 + tp2_pct / 100),
+            entry_price * (1 + tp3_pct / 100),
+        ]
+        # Allocate split quantities (integer contracts) — distribute rounding
+        qty_alloc = [int(round(entry_qty * s)) for s in splits]
+        diff = entry_qty - sum(qty_alloc)
+        if diff != 0:
+            qty_alloc[-1] += diff
+        qty_alloc = [max(0, q) for q in qty_alloc]
+        # If a tier's quantity is 0 (split=0), we still need it claimable.
+
+        # Stop price — None means no stop, otherwise entry × (1 - stop_pct/100)
+        stop_price = (entry_price * (1 - init_stop_pct / 100)
+                      if init_stop_pct and init_stop_pct > 0 else None)
+
+        remaining = entry_qty
+        filled: list[dict] = []
+        tier_hit = [False, False, False]
+
+        for _, bar in window.iterrows():
+            if remaining <= 0:
+                break
+            bar_h = float(bar["h"]) if bar.get("h") is not None else None
+            bar_l = float(bar["l"]) if bar.get("l") is not None else None
+
+            # Stop check first (within a single bar we assume the stop
+            # would fill before any TP if both intra-bar levels are tagged;
+            # this is conservative — favors the simulator showing slightly
+            # worse outcomes than a "TP fills first" assumption would).
+            if stop_price is not None and bar_l is not None and bar_l <= stop_price:
+                filled.append({
+                    "tier":  "stop",
+                    "price": stop_price,
+                    "qty":   remaining,
+                    "t":     int(bar["t"]),
+                })
+                remaining = 0
+                break
+
+            # TP checks in order — fire each tier that the high crossed.
+            for i in range(3):
+                if tier_hit[i]:
+                    continue
+                if bar_h is None or bar_h < tp_prices[i]:
+                    break   # ordered tiers; if this one didn't fire, higher ones can't either
+                qty = min(qty_alloc[i], remaining)
+                if qty <= 0:
+                    tier_hit[i] = True
+                    continue
+                filled.append({
+                    "tier":  i + 1,
+                    "price": tp_prices[i],
+                    "qty":   qty,
+                    "t":     int(bar["t"]),
+                })
+                remaining -= qty
+                tier_hit[i] = True
+                # After TP1 fires, optionally trail stop to entry
+                if i == 0 and trail_after_tp1 and (stop_price is None or stop_price < entry_price):
+                    stop_price = entry_price
+
+        # Whatever's left at the end → close at last bar's close
+        if remaining > 0:
+            last_close = float(window["c"].iloc[-1])
+            filled.append({
+                "tier":  "expiry",
+                "price": last_close,
+                "qty":   remaining,
+                "t":     int(window["t"].iloc[-1]),
+            })
+
+        # Compute simulated P&L (option-contract multiplier of 100)
+        sim_pnl = sum(
+            (f["price"] - entry_price) * f["qty"] * 100
+            for f in filled
+        )
+        sim_roi = sim_pnl / (entry_price * entry_qty * 100)
+        tiers_hit_set = {f["tier"] for f in filled if isinstance(f["tier"], int)}
+        if "stop" in [f["tier"] for f in filled] and not tiers_hit_set:
+            progression = "stopped"
+        elif 3 in tiers_hit_set:
+            progression = "full_ladder"
+        elif 2 in tiers_hit_set:
+            progression = "tp1_tp2"
+        elif 1 in tiers_hit_set:
+            progression = "tp1_only"
+        else:
+            progression = "expiry_close"
+
+        # "Reached" = price crossed the tier threshold; "hit" = contracts
+        # were filled. They diverge when a split allocation rounds to 0
+        # (e.g. 25% of 2 contracts). Use reached for hit-rate analytics,
+        # use hit (filled) for progression-class P&L.
+        tiers_reached = [i + 1 for i, h in enumerate(tier_hit) if h]
+        sim_results.append({
+            "intent_id":    t["intent_id"],
+            "ticker":       t["ticker"],
+            "entry_price":  entry_price,
+            "entry_qty":    entry_qty,
+            "actual_pnl":   t.get("realized_pnl") or 0,
+            "actual_roi":   round((t.get("roi") or 0) * 100, 1),
+            "sim_pnl":      round(sim_pnl, 0),
+            "sim_roi":      round(sim_roi * 100, 1),
+            "progression":  progression,
+            "tiers_hit":    sorted(tiers_hit_set),
+            "tiers_reached":tiers_reached,
+            "filled":       filled,
+        })
+
+    # ── Aggregate comparison ────────────────────────────────────────
+    n_sim = len(sim_results)
+    actual_total = round(sum(r["actual_pnl"] for r in sim_results), 0)
+    sim_total    = round(sum(r["sim_pnl"]    for r in sim_results), 0)
+
+    # Tier-reached counts — "did the bar ever cross the TP threshold?"
+    # Independent of split allocation, so it doesn't get fooled by
+    # small-quantity trades where a split rounds to zero contracts.
+    sim_tier_hits = [
+        sum(1 for r in sim_results if (i+1) in r["tiers_reached"])
+        for i in range(3)
+    ]
+
+    # Per-progression class rollup
+    by_prog: dict[str, list[dict]] = defaultdict(list)
+    for r in sim_results:
+        by_prog[r["progression"]].append(r)
+
+    prog_order = ["full_ladder", "tp1_tp2", "tp1_only", "stopped", "expiry_close"]
+    prog_label = {
+        "full_ladder":  "Full ladder (TP1+TP2+TP3)",
+        "tp1_tp2":      "TP1 + TP2",
+        "tp1_only":     "TP1 only",
+        "stopped":      "Stopped out",
+        "expiry_close": "Held to expiry close",
+    }
+    progression_rows = []
+    for key in prog_order:
+        bucket = by_prog.get(key, [])
+        if not bucket:
+            continue
+        wins = sum(1 for r in bucket if r["sim_pnl"] > 0)
+        rois = [r["sim_roi"] for r in bucket]
+        progression_rows.append({
+            "key":       key,
+            "label":     prog_label[key],
+            "n":         len(bucket),
+            "pct":       round(len(bucket) / n_sim * 100, 1) if n_sim else 0,
+            "wins":      wins,
+            "win_rate":  round(wins / len(bucket) * 100, 1),
+            "median_roi": round(median(rois), 1) if rois else None,
+            "total_pnl": round(sum(r["sim_pnl"] for r in bucket), 0),
+            "avg_pnl":   round(sum(r["sim_pnl"] for r in bucket) / len(bucket), 0),
+        })
+
+    # Biggest movers (where simulation differs most from actual)
+    movers = sorted(sim_results,
+                    key=lambda r: r["sim_pnl"] - r["actual_pnl"],
+                    reverse=True)
+    top_better = movers[:10]
+    top_worse  = movers[-10:][::-1]   # worst first
+
+    return {
+        "params": {
+            "tp1_pct": tp1_pct, "tp2_pct": tp2_pct, "tp3_pct": tp3_pct,
+            "split1": split1, "split2": split2, "split3": split3,
+            "init_stop_pct": init_stop_pct,
+            "trail_after_tp1": trail_after_tp1,
+        },
+        "n_total":      len(trades),
+        "n_simulated":  n_sim,
+        "n_skipped":    skipped,
+        "actual_total": actual_total,
+        "sim_total":    sim_total,
+        "delta_total":  round(sim_total - actual_total, 0),
+        "tier_hits":    sim_tier_hits,
+        "tier_hit_pct": [round(h / n_sim * 100, 1) if n_sim else 0
+                         for h in sim_tier_hits],
+        "progression":  progression_rows,
+        "top_better":   top_better,
+        "top_worse":    top_worse,
+    }

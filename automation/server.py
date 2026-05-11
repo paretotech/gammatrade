@@ -1657,11 +1657,40 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
 async def analytics_ladders(
     request: Request,
     range: Optional[str] = None,
+    tp1: Optional[float] = None,
+    tp2: Optional[float] = None,
+    tp3: Optional[float] = None,
+    s1: Optional[float] = None,
+    s2: Optional[float] = None,
+    s3: Optional[float] = None,
+    stop: Optional[float] = None,
+    trail: Optional[int] = None,
+    simulate: Optional[int] = None,
 ) -> HTMLResponse:
-    """TP-ladder analysis — per-tier hit rates, time-to-fire, and per
-    progression class (TP1-only / TP1+2 / full ladder) outcomes."""
+    """TP-ladder analysis. With `simulate=1` and ladder params, also
+    replays the trades against the supplied ladder and renders an
+    actual-vs-simulated comparison."""
     from . import analytics as _a
     rng = _norm_range(range)
+    sim_data = None
+    sim_form = {
+        "tp1": tp1 if tp1 is not None else 20.0,
+        "tp2": tp2 if tp2 is not None else 30.0,
+        "tp3": tp3 if tp3 is not None else 40.0,
+        "s1":  s1  if s1  is not None else 0.5,
+        "s2":  s2  if s2  is not None else 0.25,
+        "s3":  s3  if s3  is not None else 0.25,
+        "stop": stop if stop is not None else 0.0,
+        "trail": bool(trail),
+    }
+    if simulate:
+        sim_data = _a.simulate_ladder(
+            range_key=rng,
+            tp1_pct=sim_form["tp1"], tp2_pct=sim_form["tp2"], tp3_pct=sim_form["tp3"],
+            split1=sim_form["s1"], split2=sim_form["s2"], split3=sim_form["s3"],
+            init_stop_pct=sim_form["stop"] if sim_form["stop"] > 0 else None,
+            trail_after_tp1=sim_form["trail"],
+        )
     return TEMPLATES.TemplateResponse(
         "analytics_ladders.html",
         {
@@ -1671,6 +1700,8 @@ async def analytics_ladders(
             "tab_slug":   "ladders",
             "range_key":  rng,
             "data":       _a.ladder_analysis(range_key=rng),
+            "sim_form":   sim_form,
+            "sim_data":   sim_data,
             **nav_context(),
         },
     )
