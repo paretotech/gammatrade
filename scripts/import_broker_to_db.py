@@ -29,9 +29,66 @@ def _f(v):
         return None
 
 
+def _pct(v):
+    """Parse percent strings like '40%' or '40' to a float (40.0)."""
+    if v in (None, "", "nan"):
+        return None
+    s = str(v).strip().rstrip("%").strip()
+    try:
+        return float(s) if s else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _i(v):
     f = _f(v)
     return int(f) if f is not None else None
+
+
+def _to_iso_date(date_str: str) -> str | None:
+    """Parse master-log date strings into ISO 'YYYY-MM-DD'.
+
+    Accepts:
+      - '5/7/26', '05/07/2026'  (US M/D/YY or M/D/YYYY)
+      - '2026-05-07'            (already ISO — passed through)
+    Returns None on unparseable input so the caller can skip the row.
+    """
+    if not date_str:
+        return None
+    s = date_str.strip()
+    # Already ISO?
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    if "/" in s:
+        parts = s.split("/")
+        if len(parts) == 3:
+            try:
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+            except ValueError:
+                return None
+            if y < 100:
+                y += 2000
+            return f"{y:04d}-{m:02d}-{d:02d}"
+    return None
+
+
+def _to_iso_ts(date_str: str, time_str: str) -> str | None:
+    """Combine a master-log date + HH:MM:SS time into ISO 'YYYY-MM-DDTHH:MM:SS'."""
+    iso_d = _to_iso_date(date_str)
+    if not iso_d:
+        return None
+    t = (time_str or "").strip()
+    if not t:
+        return f"{iso_d}T00:00:00"
+    # Pad single-digit hours and ensure HH:MM:SS
+    bits = t.split(":")
+    if len(bits) == 2:
+        bits.append("00")
+    try:
+        hh, mm, ss = (int(bits[0]), int(bits[1]), int(bits[2]))
+    except (ValueError, IndexError):
+        return f"{iso_d}T00:00:00"
+    return f"{iso_d}T{hh:02d}:{mm:02d}:{ss:02d}"
 
 
 def _stable_intent_id(date_str: str, symbol: str, time_str: str) -> str:
@@ -103,8 +160,12 @@ def main(argv=None) -> int:
         is_open = weighted_roi == "OPEN" or not weighted_roi
         status = "pending" if is_open else "filled"
 
-        # Combined entry timestamp (date + time-of-alert)
-        entry_ts = f"{date_str} {time_str}" if time_str else date_str
+        # Combined entry timestamp normalized to ISO so downstream date
+        # bucketing (date.fromisoformat) works.
+        entry_ts = _to_iso_ts(date_str, time_str)
+        if not entry_ts:
+            skipped_invalid += 1
+            continue
 
         intent_row = {
             "intent_id": intent_id,
@@ -145,13 +206,14 @@ def main(argv=None) -> int:
                 (f"{intent_id}_buy", intent_id, entry_ts, "BUY",
                  contracts, entry_price, 1))
 
-            # TP fills from columns TP1 Exit / TP1 % / TP1 ROI etc.
+            # TP fills from columns "TP1 Exit" / "TP1 %" / "TP1 ROI" etc.
+            # Note the space in "TP1 %" — the master log column has a space,
+            # and values are stored as strings like "40%".
             for tier in (1, 2, 3, 4):
                 exit_price = _f(r.get(f"TP{tier} Exit"))
                 if not exit_price:
                     continue
-                # tp{n} % is fraction of position closed
-                units_pct = _f(r.get(f"TP{tier}%"))
+                units_pct = _pct(r.get(f"TP{tier} %"))
                 qty = max(1, round((units_pct or 0) / 100 * contracts)) if units_pct else 1
                 qty = min(qty, contracts)
                 conn.execute(
