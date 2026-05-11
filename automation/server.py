@@ -1218,14 +1218,42 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         for row in df[["t", "c"]].to_dict(orient="records")
     ]
 
-    # Markers: each fill at its timestamp. Front-end colors them by kind.
+    # Compute the chart's x-axis bounds: the full lifecycle from the
+    # first entry bar through expiry close (16:00 ET). The line is sparse
+    # past the last cached bar, but forcing the axis range makes the
+    # lifecycle context visible — you can SEE that the contract went
+    # quiet hours before expiry, instead of the chart silently truncating.
+    from zoneinfo import ZoneInfo as _ZI
+    _ET = _ZI("America/New_York")
+
+    # Lower bound: first entry fill if we have one, otherwise the first bar.
+    entry_fills = [f for f in fills if f["is_entry"] == 1]
+    if entry_fills:
+        try:
+            entry_dt = datetime.fromisoformat(entry_fills[0]["ts"][:19]).replace(tzinfo=_ET)
+            x_min = int(entry_dt.timestamp() * 1000)
+        except ValueError:
+            x_min = int(df["t"].iloc[0])
+    else:
+        x_min = int(df["t"].iloc[0])
+
+    # Upper bound: expiry close (4 pm ET on expiry day).
+    expiry_close_dt = datetime.combine(expiry_d, datetime.min.time(), tzinfo=_ET).replace(hour=16)
+    x_max = int(expiry_close_dt.timestamp() * 1000)
+
+    # Markers: each fill at its timestamp. Fill timestamps are stored as
+    # naive ET (broker local time) — localize explicitly so the host
+    # timezone doesn't change the result.
     def _to_epoch_ms(ts: str) -> Optional[int]:
         if not ts:
             return None
         try:
-            return int(datetime.fromisoformat(ts[:19]).timestamp() * 1000)
+            dt = datetime.fromisoformat(ts[:19])
         except ValueError:
             return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_ET)
+        return int(dt.timestamp() * 1000)
 
     # Marker classification:
     #   entry          — is_entry == 1
@@ -1276,10 +1304,27 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
             "contracts": f["contracts"],
         })
 
-    # Expiry marker: 16:00 ET on expiry day (we approximate with the last
-    # bar in the series so it lands on the chart even if expiry is in the
-    # future and we don't have post-close bars).
-    expiry_t = int(df["t"].iloc[-1])
+    # MFE marker — single dot at the (timestamp, high) of the bar that
+    # actually printed the maximum favorable price over the lifecycle.
+    # Source is the bar's HIGH (not close), so it lands slightly above
+    # the close-only line — that's the point.
+    mfe_marker = None
+    if "h" in df.columns and not df["h"].dropna().empty:
+        mfe_df = df[(df["t"] >= x_min) & (df["t"] <= x_max)].dropna(subset=["h"])
+        if not mfe_df.empty:
+            idx = mfe_df["h"].idxmax()
+            mfe_marker = {
+                "t":     int(mfe_df.loc[idx, "t"]),
+                "y":     float(mfe_df.loc[idx, "h"]),
+                "kind":  "mfe",
+                "label": "MFE peak",
+            }
+
+    # Expiry marker sits at the right edge of the x-axis. If we have a
+    # bar at-or-near expiry close we use it; otherwise we just mark the
+    # x-axis point at expiry-close price = last known close (the option
+    # went silent before expiry — that flat tail IS the data).
+    expiry_t = x_max
     expiry_price = float(df["c"].iloc[-1])
 
     return JSONResponse({
@@ -1288,8 +1333,11 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         "strike":        float(raw_intent["strike"]),
         "right":         raw_intent["right"],
         "expiry":        str(expiry_d),
-        "bars":          bars_payload,   # [{t: epoch_ms, c: close}]
-        "markers":       markers,        # [{t, y, kind, label, ...}]
+        "x_min":         x_min,           # epoch ms — chart axis lower bound
+        "x_max":         x_max,           # epoch ms — chart axis upper bound (expiry close)
+        "bars":          bars_payload,    # [{t: epoch_ms, c: close}]
+        "markers":       markers,         # [{t, y, kind, label, ...}]
+        "mfe_marker":    mfe_marker,      # {t, y, kind:'mfe', label:'MFE peak'} or null
         "expiry_marker": {"t": expiry_t, "y": expiry_price},
     })
 

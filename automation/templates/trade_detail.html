@@ -93,6 +93,12 @@
                     <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500"></span> Close
                 </span>
                 <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5"
+                          style="background: rgb(217, 70, 239); clip-path: polygon(50% 0, 100% 100%, 0 100%);"></span>
+                    MFE peak
+                    <span class="text-stone-400 text-[10px]">(max favorable, entry → expiry)</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5">
                     <span class="inline-block w-2.5 h-2.5 rounded-full bg-stone-400"></span> Expiry
                 </span>
             </div>
@@ -334,6 +340,8 @@ function tradeChart(intentId) {
         occ:       '',
         bars:      [],
         markers:   [],
+        xMin:      null,
+        xMax:      null,
         errorMsg:  '',
         _chart:    null,
 
@@ -354,6 +362,14 @@ function tradeChart(intentId) {
                 this.occ     = body.occ;
                 this.bars    = body.bars || [];
                 this.markers = body.markers || [];
+                this.xMin    = body.x_min ?? null;
+                this.xMax    = body.x_max ?? null;
+
+                // MFE peak marker (single dot at the bar that printed the
+                // max favorable price over the lifecycle).
+                if (body.mfe_marker) {
+                    this.markers.push(body.mfe_marker);
+                }
 
                 // Append the expiry marker so it shows alongside fills
                 if (body.expiry_marker) {
@@ -383,26 +399,30 @@ function tradeChart(intentId) {
                 tp3:    'rgb(124, 58, 237)',    // violet-600
                 stop:   'rgb(239, 68, 68)',     // red-500    — below entry / prior TP
                 close:  'rgb(245, 158, 11)',    // amber-500  — discretionary profitable exit
+                mfe:    'rgb(217, 70, 239)',    // fuchsia-500 — max favorable peak
                 expiry: 'rgb(168, 162, 158)',   // stone-400
             }[kind] || 'rgb(120, 113, 108)');
 
             const lineData = this.bars.map(b => ({ x: b.t, y: b.c }));
 
-            const kinds = ['entry', 'tp1', 'tp2', 'tp3', 'stop', 'close', 'expiry'];
+            const kinds = ['entry', 'tp1', 'tp2', 'tp3', 'stop', 'close', 'mfe', 'expiry'];
             const scatterDatasets = kinds.map(k => {
                 const points = this.markers
                     .filter(m => m.kind === k)
                     .map(m => ({ x: m.t, y: m.y, label: m.label,
                                  side: m.side, contracts: m.contracts }));
+                let radius = 6, pointStyle = 'circle';
+                if (k === 'expiry') { radius = 5; pointStyle = 'rectRot'; }
+                if (k === 'mfe')    { radius = 7; pointStyle = 'triangle'; }
                 return {
                     type: 'scatter',
                     label: k.toUpperCase(),
                     data: points,
                     backgroundColor: colorFor(k),
                     borderColor: colorFor(k),
-                    pointRadius: k === 'expiry' ? 5 : 6,
-                    pointHoverRadius: 8,
-                    pointStyle: k === 'expiry' ? 'rectRot' : 'circle',
+                    pointRadius: radius,
+                    pointHoverRadius: radius + 2,
+                    pointStyle,
                     showLine: false,
                 };
             });
@@ -455,6 +475,11 @@ function tradeChart(intentId) {
                     scales: {
                         x: {
                             type: 'time',
+                            // Force the axis to span the contract's full
+                            // lifecycle (entry → expiry close), even if
+                            // bars are sparse — sparseness IS the signal.
+                            ...(this.xMin != null ? { min: this.xMin } : {}),
+                            ...(this.xMax != null ? { max: this.xMax } : {}),
                             time: { tooltipFormat: 'MMM d, HH:mm' },
                             grid: { color: 'rgba(0,0,0,0.04)' },
                             ticks: { font: { size: 10 }, color: 'rgb(120, 113, 108)' },
