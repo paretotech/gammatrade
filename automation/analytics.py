@@ -1420,3 +1420,273 @@ def stop_discipline(range_key: str = "all",
         # 20 most recent stops for the detail table.
         "recent": sorted(results, key=lambda r: r["stop_ts"], reverse=True)[:20],
     }
+
+
+# ─── Levels analysis ──────────────────────────────────────────────────────
+# Connects published support/resistance levels to actual trade outcomes:
+#   - per-(ticker, level) win rate / median ROI / median capture
+#   - "position class" buckets (ATH break, near-resistance, near-support,
+#     off-level) and their aggregate win rates
+#   - ATH-break detail list
+#
+# An "active levels" lookup uses the most recent ticker_levels snapshot
+# whose asof_ts is on-or-before the trade's entry timestamp — so we don't
+# leak future-published levels into historical analyses.
+
+def _underlying_price_at(ticker: str, ts_iso: str) -> Optional[float]:
+    """Closest cached underlying bar close to the given naive-ET timestamp.
+
+    Returns None if no bars are cached for the ticker. When the timestamp
+    is outside the cached window we snap to the nearest edge (which is
+    accurate enough for "what was the price when I entered this trade"
+    within a few minutes).
+    """
+    import bisect as _bisect
+    try:
+        from src import bars_store
+    except ImportError:
+        return None
+    try:
+        df = bars_store.load_underlying_bars(ticker)
+    except FileNotFoundError:
+        return None
+    if df is None or df.empty:
+        return None
+
+    try:
+        dt = datetime.fromisoformat(ts_iso[:19])
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_ET)
+    target_ms = int(dt.timestamp() * 1000)
+
+    df_sorted = df.dropna(subset=["t", "c"]).sort_values("t").reset_index(drop=True)
+    if df_sorted.empty:
+        return None
+    times = df_sorted["t"].astype("int64").tolist()
+    j = _bisect.bisect_left(times, target_ms)
+    if j == 0:
+        return float(df_sorted["c"].iloc[0])
+    if j >= len(times):
+        return float(df_sorted["c"].iloc[-1])
+    if abs(times[j] - target_ms) < abs(times[j-1] - target_ms):
+        return float(df_sorted["c"].iloc[j])
+    return float(df_sorted["c"].iloc[j-1])
+
+
+def _active_levels_at(ticker: str, ts_iso: str):
+    """Most recent ticker_levels snapshot at or before `ts_iso`. Returns
+    a LevelSnapshot or None."""
+    from . import levels as _lv
+    with _connect() as conn:
+        r = conn.execute(
+            "SELECT * FROM ticker_levels "
+            "WHERE ticker = ? AND asof_ts <= ? "
+            "ORDER BY asof_ts DESC LIMIT 1",
+            (ticker.upper(), ts_iso),
+        ).fetchone()
+    if r is None:
+        return None
+    return _lv.LevelSnapshot(
+        ticker=r["ticker"],
+        asof_ts=r["asof_ts"],
+        current_price=r["current_price"],
+        levels_below=_lv._parse_pipe_levels(r["levels_below"]),
+        levels_above=_lv._parse_pipe_levels(r["levels_above"]),
+        source=r["source"] or "",
+        note=r["note"] or "",
+    )
+
+
+def _classify_position(underlying: float, snap, proximity_pct: float) -> dict:
+    """Classify where the underlying sat relative to published levels.
+
+    Returns a dict with `bucket` (one of: ath_break, below_all_support,
+    near_resistance, near_support, mid_range, off_level) plus the
+    nearest support/resistance and their distance percentages.
+    """
+    below = sorted(snap.levels_below or [])
+    above = sorted(snap.levels_above or [])
+
+    nearest_above = min((lvl for lvl in above if lvl >= underlying), default=None)
+    nearest_below = max((lvl for lvl in below if lvl <= underlying), default=None)
+
+    dist_above_pct = ((nearest_above - underlying) / underlying * 100
+                      if nearest_above is not None else None)
+    dist_below_pct = ((underlying - nearest_below) / underlying * 100
+                      if nearest_below is not None else None)
+
+    # ATH break: underlying above all mapped resistance
+    if above and underlying > max(above):
+        bucket = "ath_break"
+    # Below all support — capitulation / break of structure
+    elif below and underlying < min(below):
+        bucket = "below_all_support"
+    elif dist_above_pct is not None and dist_above_pct <= proximity_pct:
+        bucket = "near_resistance"
+    elif dist_below_pct is not None and dist_below_pct <= proximity_pct:
+        bucket = "near_support"
+    elif nearest_above is None and nearest_below is None:
+        bucket = "off_level"
+    else:
+        bucket = "mid_range"
+
+    return {
+        "bucket":         bucket,
+        "nearest_above":  nearest_above,
+        "nearest_below":  nearest_below,
+        "dist_above_pct": dist_above_pct,
+        "dist_below_pct": dist_below_pct,
+    }
+
+
+def _trade_outcome_stats(trades: list[dict]) -> dict:
+    """Aggregate (n, win_rate, median_realized, median_capture) from a
+    list of closed_trades() rows."""
+    n = len(trades)
+    if n == 0:
+        return {"n": 0, "win_rate": None, "median_roi": None,
+                "median_capture": None, "median_mfe": None, "total_pnl": 0}
+    wins = sum(1 for t in trades if (t.get("realized_pnl") or 0) > 0)
+    rois = [t["actual_pct"] for t in trades if t.get("actual_pct") is not None]
+    caps = [t["capture_pct"] for t in trades if t.get("capture_pct") is not None]
+    mfes = [t["mfe_in_pct"]  for t in trades if t.get("mfe_in_pct")  is not None]
+    total_pnl = sum(t.get("realized_pnl") or 0 for t in trades)
+    return {
+        "n":              n,
+        "win_rate":       round(wins / n * 100, 1),
+        "median_roi":     round(median(rois), 1) if rois else None,
+        "median_capture": round(median(caps), 1) if caps else None,
+        "median_mfe":     round(median(mfes), 1) if mfes else None,
+        "total_pnl":      round(total_pnl, 0),
+    }
+
+
+def levels_analysis(range_key: str = "all",
+                    proximity_pct: float = 0.5) -> dict:
+    """Connect published levels to trade outcomes.
+
+    For each closed trade in `range_key`:
+      1. Look up the underlying price at entry (closest cached bar).
+      2. Look up the levels snapshot active at entry time (latest snapshot
+         on or before the entry timestamp).
+      3. Classify the position (ATH break / near-resistance / near-support /
+         mid-range / etc.).
+      4. Record the trade against the nearest published level.
+
+    Then roll up by position-class and by (ticker, level).
+    """
+    trades = closed_trades(limit=5000, range_key=range_key)
+
+    classified: list[dict] = []
+    no_bars   = 0
+    no_levels = 0
+
+    # For each trade, find its underlying price + active levels + nearest level
+    for t in trades:
+        entry_ts = t.get("first_entry_ts")
+        if not entry_ts:
+            continue
+        ticker = t["ticker"]
+        under  = _underlying_price_at(ticker, entry_ts)
+        if under is None:
+            no_bars += 1
+            continue
+        snap = _active_levels_at(ticker, entry_ts)
+        if snap is None or (not snap.levels_above and not snap.levels_below):
+            no_levels += 1
+            continue
+        cls = _classify_position(under, snap, proximity_pct)
+
+        # Nearest level overall — break ties toward the one above (more
+        # interesting for typical bullish call trades)
+        nearest_level = None
+        nearest_dist  = None
+        if cls["nearest_above"] is not None:
+            nearest_level = cls["nearest_above"]
+            nearest_dist  = cls["dist_above_pct"]
+        if cls["nearest_below"] is not None:
+            d_below = cls["dist_below_pct"]
+            if nearest_dist is None or d_below < nearest_dist:
+                nearest_level = cls["nearest_below"]
+                nearest_dist  = d_below
+
+        classified.append({
+            **t,
+            "underlying_at_entry": under,
+            "bucket":              cls["bucket"],
+            "nearest_above":       cls["nearest_above"],
+            "nearest_below":       cls["nearest_below"],
+            "dist_above_pct":      cls["dist_above_pct"],
+            "dist_below_pct":      cls["dist_below_pct"],
+            "nearest_level":       nearest_level,
+            "nearest_dist_pct":    nearest_dist,
+        })
+
+    # ── Position-class rollup ─────────────────────────────────────────
+    bucket_labels = {
+        "ath_break":          "ATH break",
+        "near_resistance":    "Near resistance",
+        "near_support":       "Near support",
+        "below_all_support":  "Below all support",
+        "mid_range":          "Mid-range",
+        "off_level":          "Off-level (no published levels)",
+    }
+    by_bucket_map: dict[str, list[dict]] = defaultdict(list)
+    for c in classified:
+        by_bucket_map[c["bucket"]].append(c)
+    bucket_order = ["ath_break", "near_resistance", "near_support",
+                    "mid_range", "below_all_support", "off_level"]
+    by_bucket = []
+    for k in bucket_order:
+        if k not in by_bucket_map:
+            continue
+        s = _trade_outcome_stats(by_bucket_map[k])
+        by_bucket.append({"key": k, "label": bucket_labels[k], **s})
+
+    # ── Per-(ticker, level) rollup ────────────────────────────────────
+    # A trade "hits" a level if its underlying at entry was within
+    # `proximity_pct` of that level. We use the nearest level (above or
+    # below) to avoid double-counting.
+    per_level_map: dict[tuple, list[dict]] = defaultdict(list)
+    for c in classified:
+        if c["nearest_dist_pct"] is None or c["nearest_dist_pct"] > proximity_pct:
+            continue
+        per_level_map[(c["ticker"], c["nearest_level"])].append(c)
+
+    per_level = []
+    for (tkr, lvl), trades_at in per_level_map.items():
+        if len(trades_at) < 2:   # skip single-trade levels (noisy)
+            continue
+        s = _trade_outcome_stats(trades_at)
+        # Resistance vs support hint — was this level above or below at entry?
+        side = "resistance" if any(c["nearest_above"] == lvl for c in trades_at) else "support"
+        per_level.append({
+            "ticker":   tkr,
+            "level":    lvl,
+            "side":     side,
+            **s,
+            "trade_ids": [c["intent_id"] for c in trades_at],
+        })
+    per_level.sort(key=lambda r: (-r["n"], -(r["win_rate"] or 0)))
+
+    # ── ATH break detail ───────────────────────────────────────────────
+    ath = by_bucket_map.get("ath_break", [])
+    ath_summary = _trade_outcome_stats(ath)
+    ath_recent = sorted(
+        ath, key=lambda c: c.get("first_entry_ts") or "", reverse=True
+    )[:20]
+
+    return {
+        "range_key":      range_key,
+        "proximity_pct":  proximity_pct,
+        "n_total":        len(trades),
+        "n_analyzed":     len(classified),
+        "n_no_bars":      no_bars,
+        "n_no_levels":    no_levels,
+        "by_bucket":      by_bucket,
+        "per_level":      per_level,
+        "ath_break":      ath_summary,
+        "ath_recent":     ath_recent,
+    }

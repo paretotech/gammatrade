@@ -1645,6 +1645,35 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
     )
 
 
+@app.get("/analytics/levels", response_class=HTMLResponse)
+async def analytics_levels(
+    request: Request,
+    range: Optional[str] = None,
+    proximity: Optional[float] = None,
+) -> HTMLResponse:
+    """Connect published support/resistance levels to trade outcomes:
+      - position-class win rates (ATH break, near resistance/support, mid-range)
+      - per-(ticker, level) performance
+      - ATH-break detail list
+    """
+    from . import analytics as _a
+    rng  = _norm_range(range)
+    prox = proximity if proximity in (0.3, 0.5, 1.0, 2.0) else 0.5
+    return TEMPLATES.TemplateResponse(
+        "analytics_levels.html",
+        {
+            "request":      request,
+            "page_title":   "Analytics",
+            "active_tab":   "levels",
+            "tab_slug":     "levels",
+            "range_key":    rng,
+            "proximity":    prox,
+            "data":         _a.levels_analysis(range_key=rng, proximity_pct=prox),
+            **nav_context(),
+        },
+    )
+
+
 @app.get("/analytics/leakage", response_class=HTMLResponse)
 async def analytics_leakage(
     request: Request,
