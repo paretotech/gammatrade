@@ -234,7 +234,7 @@
             <span>{{ calendar.month_trades }} trades</span>
             <span class="text-stone-300">·</span>
             <span class="font-semibold text-stone-900 mono {% if calendar.month_total > 0 %}text-emerald-700{% elif calendar.month_total < 0 %}text-red-700{% endif %}">
-                {% if calendar.month_total >= 0 %}+{% endif %}${{ "{:,.0f}".format(calendar.month_total) }}
+                ${{ "{:,.0f}".format(calendar.month_total|abs) }}
             </span>
             <span class="text-stone-300">·</span>
             <span>{{ calendar.month_win_rate }}% win rate</span>
@@ -268,7 +268,7 @@
                                 {% if day.pnl > 0 %}text-emerald-700
                                 {% elif day.pnl < 0 %}text-red-700
                                 {% else %}text-stone-500{% endif %}">
-                        {% if day.pnl >= 0 %}+{% endif %}${{ "{:,.0f}".format(day.pnl|abs) if day.pnl < 0 else "{:,.0f}".format(day.pnl) }}
+                        ${{ "{:,.0f}".format(day.pnl|abs) }}
                     </div>
                     <div class="text-[11px] text-stone-500 mt-auto">
                         {{ day.n_trades }} trade{{ '' if day.n_trades == 1 else 's' }}{% if day.win_rate is not none %} · {{ day.win_rate|int }}%{% endif %}
@@ -287,7 +287,7 @@
                 <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium">{{ wt.label }}</div>
                 <div class="mono font-semibold text-[15px] mt-1 leading-tight
                             {% if wt.pnl > 0 %}text-emerald-700{% elif wt.pnl < 0 %}text-red-700{% else %}text-stone-400{% endif %}">
-                    {% if wt.pnl >= 0 %}+{% endif %}${{ "{:,.0f}".format(wt.pnl) }}
+                    ${{ "{:,.0f}".format(wt.pnl|abs) }}
                 </div>
                 {% if wt.n_days > 0 %}
                 <div class="text-[11px] text-stone-500 mt-1">{{ wt.n_days }}d · {{ wt.n_trades }}t</div>
