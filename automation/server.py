@@ -1218,11 +1218,12 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         for row in df[["t", "c"]].to_dict(orient="records")
     ]
 
-    # Compute the chart's x-axis bounds: the full lifecycle from the
-    # first entry bar through expiry close (16:00 ET). The line is sparse
-    # past the last cached bar, but forcing the axis range makes the
-    # lifecycle context visible — you can SEE that the contract went
-    # quiet hours before expiry, instead of the chart silently truncating.
+    # Compute the chart's x-axis bounds. The lower bound is the first
+    # entry fill. The upper bound goes to expiry close IF the bars cover
+    # most of the lifecycle, but caps at last_meaningful_event + small
+    # padding when bars are sparse — otherwise a one-day-active contract
+    # produces 14 days of empty whitespace which makes the markers
+    # impossible to read.
     from zoneinfo import ZoneInfo as _ZI
     _ET = _ZI("America/New_York")
 
@@ -1237,9 +1238,23 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
     else:
         x_min = int(df["t"].iloc[0])
 
-    # Upper bound: expiry close (4 pm ET on expiry day).
+    # Upper bound: expiry close, but clamped to last_event + 4h padding.
+    # last_event = the latest of (last cached bar, last fill) so exit
+    # fills that happen after the bars go quiet stay visible.
     expiry_close_dt = datetime.combine(expiry_d, datetime.min.time(), tzinfo=_ET).replace(hour=16)
-    x_max = int(expiry_close_dt.timestamp() * 1000)
+    expiry_close_ms = int(expiry_close_dt.timestamp() * 1000)
+    last_bar_ms     = int(df["t"].iloc[-1])
+
+    last_fill_ms = last_bar_ms
+    for f in fills:
+        try:
+            fdt = datetime.fromisoformat(f["ts"][:19]).replace(tzinfo=_ET)
+            last_fill_ms = max(last_fill_ms, int(fdt.timestamp() * 1000))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    pad_ms = 4 * 60 * 60 * 1000   # 4 hours
+    x_max  = min(expiry_close_ms, max(last_bar_ms, last_fill_ms) + pad_ms)
 
     # Markers: each fill at its timestamp. Fill timestamps are stored as
     # naive ET (broker local time) — localize explicitly so the host
@@ -1320,12 +1335,13 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
                 "label": "MFE peak",
             }
 
-    # Expiry marker sits at the right edge of the x-axis. If we have a
-    # bar at-or-near expiry close we use it; otherwise we just mark the
-    # x-axis point at expiry-close price = last known close (the option
-    # went silent before expiry — that flat tail IS the data).
-    expiry_t = x_max
-    expiry_price = float(df["c"].iloc[-1])
+    # Expiry marker — only included when expiry close is within (or
+    # close to) the visible window. When the contract died days before
+    # expiry we omit the marker so it doesn't pin the axis open; the
+    # expiry date is already shown in the page header.
+    expiry_marker = None
+    if expiry_close_ms <= x_max:
+        expiry_marker = {"t": expiry_close_ms, "y": float(df["c"].iloc[-1])}
 
     return JSONResponse({
         "occ":           occ,
@@ -1334,11 +1350,11 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         "right":         raw_intent["right"],
         "expiry":        str(expiry_d),
         "x_min":         x_min,           # epoch ms — chart axis lower bound
-        "x_max":         x_max,           # epoch ms — chart axis upper bound (expiry close)
+        "x_max":         x_max,           # epoch ms — chart axis upper bound
         "bars":          bars_payload,    # [{t: epoch_ms, c: close}]
         "markers":       markers,         # [{t, y, kind, label, ...}]
         "mfe_marker":    mfe_marker,      # {t, y, kind:'mfe', label:'MFE peak'} or null
-        "expiry_marker": {"t": expiry_t, "y": expiry_price},
+        "expiry_marker": expiry_marker,   # null when expiry is past the visible window
     })
 
 

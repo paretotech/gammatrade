@@ -221,12 +221,46 @@ def main(argv=None) -> int:
     # ──────────────────────────────────────────────────────────────
     # Pass 2: fetch bars per contract, skipping any whose window is
     # already cached.
+    #
+    # `manifest_covers` only checks the requested date range — it can't
+    # tell that bars fetched on entry day are now stale because exits
+    # happened weeks later. So we additionally re-fetch any contract
+    # whose most-recent fill is later than the manifest's `fetched_at`.
     # ──────────────────────────────────────────────────────────────
-    fetched, cached, errors = 0, 0, 0
+    manifest_df = bars_store.load_manifest()
+
+    def _needs_refetch(occ: str, latest_fill: datetime) -> bool:
+        """True if the contract has fill activity newer than its cache."""
+        sub = manifest_df[(manifest_df["kind"] == "option")
+                          & (manifest_df["symbol"] == occ)]
+        if sub.empty:
+            return False
+        try:
+            last_fetch = max(
+                datetime.fromisoformat(s) for s in sub["fetched_at"].astype(str)
+            )
+        except ValueError:
+            return False
+        # tz-normalize for comparison
+        if last_fetch.tzinfo is None:
+            last_fetch = last_fetch.replace(tzinfo=timezone.utc)
+        lf_utc = latest_fill.astimezone(timezone.utc) if latest_fill.tzinfo else \
+                 latest_fill.replace(tzinfo=_ET).astimezone(timezone.utc)
+        # Re-fetch if any fill is more than 1h after we last pulled bars
+        return lf_utc - last_fetch > timedelta(hours=1)
+
+    fetched, cached, refetched, errors = 0, 0, 0, 0
     for i, (occ, meta) in enumerate(contracts.items(), 1):
-        if bars_store.manifest_covers("option", occ, meta["from"], meta["to"]):
+        latest_fill = max((tr["last_exit"] or tr["first_entry"]
+                           for tr in meta["trade_rows"]),
+                          default=None)
+        stale = latest_fill is not None and _needs_refetch(occ, latest_fill)
+        if bars_store.manifest_covers("option", occ, meta["from"], meta["to"]) \
+                and not stale:
             cached += 1
             continue
+        if stale:
+            refetched += 1
         try:
             bars = client.get_aggregates(occ, 1, "minute", meta["from"], meta["to"])
         except (PolygonError, Exception) as e:  # noqa: BLE001
@@ -299,7 +333,8 @@ def main(argv=None) -> int:
         conn.commit()
 
     print()
-    print(f"contracts:  fetched={fetched}  cached={cached}  errors={errors}")
+    print(f"contracts:  fetched={fetched}  refetched_stale={refetched}  "
+          f"cached={cached}  errors={errors}")
     print(
         f"trades:     updated={updated}  no_bars={no_bars}  "
         f"no_exit_fill={no_exit}  empty_window={empty_slice}"
