@@ -1653,6 +1653,29 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
     )
 
 
+@app.get("/analytics/ladders", response_class=HTMLResponse)
+async def analytics_ladders(
+    request: Request,
+    range: Optional[str] = None,
+) -> HTMLResponse:
+    """TP-ladder analysis — per-tier hit rates, time-to-fire, and per
+    progression class (TP1-only / TP1+2 / full ladder) outcomes."""
+    from . import analytics as _a
+    rng = _norm_range(range)
+    return TEMPLATES.TemplateResponse(
+        "analytics_ladders.html",
+        {
+            "request":    request,
+            "page_title": "Analytics",
+            "active_tab": "ladders",
+            "tab_slug":   "ladders",
+            "range_key":  rng,
+            "data":       _a.ladder_analysis(range_key=rng),
+            **nav_context(),
+        },
+    )
+
+
 @app.get("/analytics/winners", response_class=HTMLResponse)
 async def analytics_winners(
     request: Request,

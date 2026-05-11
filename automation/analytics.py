@@ -2109,3 +2109,114 @@ def loser_levels_analysis(range_key: str = "all",
         "losers":        losers,
         "winners":       winners,
     }
+
+
+# ─── TP-ladder analysis ──────────────────────────────────────────────────
+# How well does the user's TP ladder actually convert?
+# Computes per-tier hit rates, per-tier price gains and time-to-fire,
+# and the distribution of "ladder completion" (TP1 only / TP1+TP2 /
+# full ladder / no TP). For each completion class we roll up the
+# realized outcome so the user can answer "is TP2/TP3 worth setting?".
+
+def ladder_analysis(range_key: str = "all") -> dict:
+    """Analyze TP-ladder progression and outcomes across closed trades."""
+    trades = closed_trades(limit=5000, range_key=range_key)
+
+    # ── Per-tier rollup ──────────────────────────────────────────────
+    # Walk each trade's tp_fills (already computed by closed_trades) and
+    # collect (price_pct_from_entry, mins_from_entry) for each tier.
+    tier_data: dict[int, list[dict]] = {1: [], 2: [], 3: []}
+    completion_buckets: dict[str, list[dict]] = {
+        "no_tp":       [],
+        "tp1_only":    [],
+        "tp1_tp2":     [],
+        "full_ladder": [],
+    }
+    ladder_choices = Counter() if False else defaultdict(int)
+    split_choices  = defaultdict(int)
+
+    for t in trades:
+        tiers_hit = set(t.get("tp_tiers_hit") or [])
+        for f in t.get("tp_fills") or []:
+            tier = f.get("tier")
+            if tier in tier_data:
+                tier_data[tier].append({
+                    "intent_id": t["intent_id"],
+                    "pct":       f.get("pct"),
+                    "mins":      f.get("mins"),
+                    "qty":       f.get("qty"),
+                })
+        # Completion class
+        if not tiers_hit:
+            k = "no_tp"
+        elif 3 in tiers_hit:
+            k = "full_ladder"
+        elif 2 in tiers_hit:
+            k = "tp1_tp2"
+        else:
+            k = "tp1_only"
+        completion_buckets[k].append(t)
+        # Ladder/split choice
+        ladder_choices[t.get("tp_ladder_choice") or "—"] += 1
+        split_choices[t.get("tp_split_choice") or "—"] += 1
+
+    # Per-tier rollup metrics
+    tier_rows = []
+    n_total = len(trades)
+    for tier in (1, 2, 3):
+        fills = tier_data[tier]
+        n_hit = len(fills)
+        pcts = [f["pct"] for f in fills if f.get("pct") is not None]
+        mins = [f["mins"] for f in fills if f.get("mins") is not None]
+        tier_rows.append({
+            "tier":             tier,
+            "label":            f"TP{tier}",
+            "n_hit":            n_hit,
+            "hit_pct":          round(n_hit / n_total * 100, 1) if n_total else 0,
+            "median_pct":       round(median(pcts), 1) if pcts else None,
+            "median_mins":      round(median(mins), 1) if mins else None,
+        })
+
+    # Completion-class outcome rollup
+    completion_label = {
+        "no_tp":       "No TP (stopped/expired)",
+        "tp1_only":    "TP1 only (stopped after)",
+        "tp1_tp2":     "TP1 + TP2",
+        "full_ladder": "Full ladder (TP1+TP2+TP3)",
+    }
+    completion_rows = []
+    for k in ("no_tp", "tp1_only", "tp1_tp2", "full_ladder"):
+        bucket = completion_buckets[k]
+        stats  = _trade_outcome_stats(bucket)
+        completion_rows.append({
+            "key":   k,
+            "label": completion_label[k],
+            "pct_of_total": round(len(bucket) / n_total * 100, 1) if n_total else 0,
+            **stats,
+        })
+
+    # "Worth-it" comparison — median outcomes by progression class
+    # (no_tp / tp1_only / tp1_tp2 / full_ladder)
+    progression_comparison = []
+    for row in completion_rows:
+        if row["n"] == 0:
+            continue
+        progression_comparison.append({
+            "label":         row["label"],
+            "n":             row["n"],
+            "median_roi":    row["median_roi"],
+            "median_capture":row["median_capture"],
+            "median_mfe":    row["median_mfe"],
+            "total_pnl":     row["total_pnl"],
+            "avg_pnl":       round(row["total_pnl"] / row["n"], 0) if row["n"] else 0,
+        })
+
+    return {
+        "range_key":      range_key,
+        "n_total":        n_total,
+        "ladder_choices": dict(ladder_choices),
+        "split_choices":  dict(split_choices),
+        "tier_rows":      tier_rows,
+        "completion_rows": completion_rows,
+        "progression":    progression_comparison,
+    }

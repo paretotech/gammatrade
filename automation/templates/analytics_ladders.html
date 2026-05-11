@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+{# Three rollups answering "how does my TP ladder actually convert?":
+   1. Ladder config the user is running (single-config check)
+   2. Per-tier funnel — hit rate / median % gain / median time-to-fire
+   3. Per-completion-class outcome rollup with avg-$-per-trade so
+      the trader can see whether progressing past TP1 actually pays. #}
+
+<div class="mb-6">
+    <h2 class="text-[15px] font-semibold text-stone-700">TP-ladder analysis</h2>
+    <p class="text-[12px] text-stone-500 mt-0.5">
+        {{ data.n_total }} closed trade{{ "s" if data.n_total != 1 else "" }} ·
+        ladder config{% if data.ladder_choices|length == 1 %}
+            <span class="mono">{{ data.ladder_choices.keys() | list | first }} ·
+            split {{ data.split_choices.keys() | list | first }}</span> across all trades
+        {% else %}
+            mixed across {{ data.ladder_choices|length }} variants
+        {% endif %}
+    </p>
+</div>
+
+{# ─── Per-tier funnel ──────────────────────────────────────────────── #}
+{% if data.tier_rows %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+    {% for r in data.tier_rows %}
+    <div class="bg-white border border-stone-200 rounded-lg p-4
+        {% if r.hit_pct >= 80 %}ring-1 ring-emerald-200{% endif %}">
+        <div class="flex items-baseline justify-between mb-1">
+            <div class="text-[10px] uppercase tracking-wider text-stone-500">{{ r.label }} hit rate</div>
+            <div class="text-[11px] mono text-stone-400">n={{ r.n_hit }}</div>
+        </div>
+        <div class="mono font-semibold
+            {% if r.hit_pct >= 80 %}text-emerald-700
+            {% elif r.hit_pct < 30 %}text-red-700
+            {% else %}text-stone-900{% endif %}"
+             style="font-size: 22px;">
+            {{ r.hit_pct }}%
+        </div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">
+            median +{{ r.median_pct if r.median_pct is not none else "—" }}% from entry
+        </div>
+        <div class="text-[11px] mono text-stone-400">
+            {% if r.median_mins is not none %}
+                {% if r.median_mins < 60 %}
+                    typically fires after {{ "%.0f"|format(r.median_mins) }}m
+                {% else %}
+                    typically fires after {{ "%.1f"|format(r.median_mins / 60) }}h
+                {% endif %}
+            {% else %}
+                no time data
+            {% endif %}
+        </div>
+
+        {# Funnel-style horizontal bar with width proportional to hit rate #}
+        <div class="mt-2 h-1.5 bg-stone-100 rounded overflow-hidden">
+            <div class="h-full bg-gradient-to-r
+                {% if r.tier == 1 %}from-emerald-400 to-emerald-500
+                {% elif r.tier == 2 %}from-sky-400 to-sky-500
+                {% else %}from-indigo-400 to-violet-500{% endif %}"
+                style="width: {{ r.hit_pct }}%"></div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{# Narrative summary — surface the key takeaways automatically #}
+{% if data.tier_rows and data.tier_rows[0].n_hit > 0 %}
+{% set tp1 = data.tier_rows[0] %}
+{% set tp2 = data.tier_rows[1] %}
+{% set tp3 = data.tier_rows[2] %}
+<div class="mb-6 px-3 py-2 rounded text-[12px]
+    {% if tp2.hit_pct < 25 %}bg-amber-50 text-amber-800 border border-amber-200
+    {% else %}bg-stone-50 text-stone-700 border border-stone-200{% endif %}">
+    {% if tp2.hit_pct < 25 %}
+        <span class="font-medium">Drop-off after TP1 is steep.</span>
+        Only {{ tp2.hit_pct }}% of trades that reach TP1 continue to TP2,
+        and {{ tp3.hit_pct }}% complete the full ladder. Either the TP2
+        target ({{ tp2.median_pct }}% above entry) sits past where most
+        trades reverse, or stops are firing before TP2 can hit.
+    {% else %}
+        <span class="font-medium">TP-ladder funnel:</span>
+        TP1 fires at +{{ tp1.median_pct }}%, TP2 at +{{ tp2.median_pct }}%
+        ({{ tp2.hit_pct }}% of trades), TP3 at +{{ tp3.median_pct }}%
+        ({{ tp3.hit_pct }}%).
+    {% endif %}
+</div>
+{% endif %}
+
+{# ─── Completion-class outcomes ─────────────────────────────────────── #}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">Outcome by ladder progression</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            Trades that reach each successive tier produce higher avg P&amp;L per trade,
+            but the small headcounts past TP1 mean total-$ contribution is dominated by
+            the TP1-only group.
+        </p>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium">Progression</th>
+                <th class="text-right py-2 font-medium">N</th>
+                <th class="text-right py-2 font-medium">% of total</th>
+                <th class="text-right py-2 font-medium">WR</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-right py-2 font-medium">Median capture</th>
+                <th class="text-right py-2 font-medium">Avg P&amp;L</th>
+                <th class="text-right py-2 pr-5 font-medium">Total P&amp;L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in data.progression %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2 font-medium">{{ r.label }}</td>
+                <td class="py-2 mono text-right text-stone-500">{{ r.n }}</td>
+                <td class="py-2 mono text-right text-stone-500">
+                    {% set pct = r.n / data.n_total * 100 if data.n_total else 0 %}
+                    {{ pct | round(1) }}%
+                </td>
+                <td class="py-2 mono text-right font-medium
+                    {% if r.win_rate and r.win_rate >= 70 %}text-emerald-700
+                    {% elif r.win_rate and r.win_rate < 50 %}text-red-700{% endif %}">
+                    {% if r.n %}{{ r.win_rate }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right
+                    {% if r.median_roi and r.median_roi > 0 %}text-emerald-700
+                    {% elif r.median_roi and r.median_roi < 0 %}text-red-700{% endif %}">
+                    {% if r.median_roi is not none %}{{ "%+.1f"|format(r.median_roi) }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right text-stone-600">
+                    {% if r.median_capture is not none %}{{ r.median_capture }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right
+                    {% if r.avg_pnl > 0 %}text-emerald-700 font-medium
+                    {% elif r.avg_pnl < 0 %}text-red-700{% endif %}">
+                    {% if r.avg_pnl is not none %}
+                        {% if r.avg_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(r.avg_pnl) }}
+                    {% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right pr-5
+                    {% if r.total_pnl > 0 %}text-emerald-600{% elif r.total_pnl < 0 %}text-red-600{% endif %}">
+                    {% if r.total_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(r.total_pnl) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{# ─── "Worth setting TP2/TP3?" interpretation panel ────────────────── #}
+{% if data.progression|length >= 3 %}
+{% set tp1_only = data.progression[1] if data.progression[0].label.startswith('No TP') else data.progression[0] %}
+{% set tp1_tp2  = none %}
+{% set full     = none %}
+{% for r in data.progression %}
+    {% if r.label == 'TP1 + TP2' %}{% set tp1_tp2 = r %}{% endif %}
+    {% if r.label.startswith('Full ladder') %}{% set full = r %}{% endif %}
+{% endfor %}
+{% if tp1_tp2 and tp1_only %}
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6">
+    <h3 class="text-[13px] font-semibold text-stone-700 mb-3">Is laddering past TP1 worth it?</h3>
+    <div class="text-[12px] text-stone-700 leading-relaxed space-y-2">
+        <p>
+            Trades that progress to TP2 average
+            <span class="mono text-emerald-700 font-medium">+${{ "%.0f"|format(tp1_tp2.avg_pnl) }}</span>
+            per trade vs
+            <span class="mono">+${{ "%.0f"|format(tp1_only.avg_pnl) }}</span>
+            for TP1-only —
+            <span class="font-medium">
+                {{ "%.1f"|format(tp1_tp2.avg_pnl / tp1_only.avg_pnl if tp1_only.avg_pnl > 0 else 0) }}× higher per-trade.
+            </span>
+        </p>
+        {% if full %}
+        <p>
+            Full-ladder completion averages
+            <span class="mono text-emerald-700 font-medium">+${{ "%.0f"|format(full.avg_pnl) }}</span>
+            per trade ({{ "%.1f"|format(full.avg_pnl / tp1_only.avg_pnl if tp1_only.avg_pnl > 0 else 0) }}× TP1-only),
+            but its median capture is
+            <span class="mono {% if full.median_capture and tp1_only.median_capture and full.median_capture < tp1_only.median_capture %}text-amber-700 font-medium{% endif %}">
+                {{ full.median_capture }}%
+            </span>
+            {% if full.median_capture and tp1_only.median_capture and full.median_capture < tp1_only.median_capture %}
+            — LOWER than TP1-only's {{ tp1_only.median_capture }}%, suggesting full-ladder
+            trades may be over-staying past their MFE peaks.
+            {% else %}
+            vs {{ tp1_only.median_capture }}% for TP1-only.
+            {% endif %}
+        </p>
+        {% endif %}
+        <p class="text-stone-500 text-[11px]">
+            Headcounts:
+            TP1-only n={{ tp1_only.n }} ·
+            TP1+TP2 n={{ tp1_tp2.n }}{% if full %} ·
+            full n={{ full.n }}{% endif %}.
+            {% if (full and full.n < 5) or tp1_tp2.n < 5 %}
+            Small samples on the laddered classes — directional read, not edge.
+            {% endif %}
+        </p>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+{% endblock %}
