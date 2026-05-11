@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Gamma favicon">
+  <!-- Match the sidebar logo mark: emerald rounded square + bold γ glyph. -->
+  <rect width="32" height="32" rx="6" fill="#10b981"/>
+  <text x="16" y="23"
+        text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+        font-size="22" font-weight="700" fill="#1c1917">γ</text>
+</svg>
