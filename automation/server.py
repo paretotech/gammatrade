@@ -1238,20 +1238,20 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
     else:
         x_min = int(df["t"].iloc[0])
 
-    # Upper bound: chart shows entry → last exit fill + 4h padding.
-    # We intentionally hide the post-exit window — the chart's job is
-    # reviewing YOUR execution, not the option's full lifecycle. The
-    # to-expiry MFE survives as a number in the capture summary block,
-    # not as additional bars on the line.
+    # Upper bound: chart shows entry → close-of-day on the day of the
+    # last exit fill (4 PM ET). We intentionally hide everything past
+    # that — the chart's job is reviewing YOUR execution. Capping at
+    # session close (rather than +Nh from exit) is the natural unit:
+    # the trading day either was, or wasn't, the day you closed out.
     #
-    # For open trades (no exit fill yet) we fall through to the last
-    # cached bar, so the chart still extends to "now" while the trade
-    # is live.
+    # For open trades (no exit fill yet) we extend to the last cached
+    # bar so the chart tracks the live position.
     expiry_close_dt = datetime.combine(expiry_d, datetime.min.time(), tzinfo=_ET).replace(hour=16)
     expiry_close_ms = int(expiry_close_dt.timestamp() * 1000)
     last_bar_ms     = int(df["t"].iloc[-1])
 
     last_exit_fill_ms = None
+    last_exit_eod_ms  = None
     for f in fills:
         if f.get("is_entry") == 1:
             continue
@@ -1262,10 +1262,16 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
             continue
         if last_exit_fill_ms is None or ms > last_exit_fill_ms:
             last_exit_fill_ms = ms
+            eod_dt = datetime.combine(
+                fdt.date(), datetime.min.time(), tzinfo=_ET,
+            ).replace(hour=16)
+            last_exit_eod_ms = int(eod_dt.timestamp() * 1000)
 
-    pad_ms     = 4 * 60 * 60 * 1000   # 4 hours
-    chart_end  = last_exit_fill_ms if last_exit_fill_ms is not None else last_bar_ms
-    x_max      = min(expiry_close_ms, chart_end + pad_ms)
+    if last_exit_eod_ms is not None:
+        x_max = min(expiry_close_ms, last_exit_eod_ms)
+    else:
+        pad_ms = 4 * 60 * 60 * 1000   # 4 hours for open trades
+        x_max  = min(expiry_close_ms, last_bar_ms + pad_ms)
 
     # Markers: each fill at its timestamp. Fill timestamps are stored as
     # naive ET (broker local time) — localize explicitly so the host
