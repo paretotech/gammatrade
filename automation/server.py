@@ -1210,13 +1210,32 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
             (intent_id,),
         ).fetchall()]
 
-    # Series: close-by-minute, in epoch-ms (what Chart.js time scale expects).
-    # We send only the columns the chart needs to keep the payload small.
-    df = df.dropna(subset=["t", "c"])
+    # Series: close-by-minute. Each bar gets a sequential `i` index so the
+    # front-end can plot on a linear axis indexed by trading-minute
+    # position — that collapses overnight/weekend gaps because the bars
+    # list is RTH-only (Polygon doesn't emit aggregates after hours).
+    # We keep `t` (real epoch ms) so tooltips can show the actual time.
+    df = df.dropna(subset=["t", "c"]).sort_values("t").reset_index(drop=True)
     bars_payload = [
-        {"t": int(row["t"]), "c": float(row["c"])}
-        for row in df[["t", "c"]].to_dict(orient="records")
+        {"i": i, "t": int(row["t"]), "c": float(row["c"])}
+        for i, row in enumerate(df[["t", "c"]].to_dict(orient="records"))
     ]
+
+    # Helper: nearest bar-index for an arbitrary real timestamp (epoch ms).
+    # Used to place fill markers on the compressed axis even when the fill
+    # ticked between bars or during a closed-hours minute Polygon skipped.
+    import bisect as _bisect
+    _bar_ts = df["t"].astype("int64").tolist()
+    def _t_to_i(real_t_ms: int) -> int:
+        if not _bar_ts:
+            return 0
+        j = _bisect.bisect_left(_bar_ts, real_t_ms)
+        if j == 0:
+            return 0
+        if j >= len(_bar_ts):
+            return len(_bar_ts) - 1
+        # snap to nearer neighbor
+        return j if abs(_bar_ts[j] - real_t_ms) < abs(_bar_ts[j-1] - real_t_ms) else j-1
 
     # Compute the chart's x-axis bounds. The lower bound is the first
     # entry fill. The upper bound goes to expiry close IF the bars cover
@@ -1273,6 +1292,14 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         pad_ms = 4 * 60 * 60 * 1000   # 4 hours for open trades
         x_max  = min(expiry_close_ms, last_bar_ms + pad_ms)
 
+    # Index-based axis bounds for the compressed (trading-time) view.
+    # i_max = index of the last bar whose real timestamp is ≤ x_max.
+    # We want strict "no bars past EOD" so the next trading session's
+    # bars (across a weekend or holiday) don't sneak onto the axis.
+    i_min = 0
+    j = _bisect.bisect_right(_bar_ts, x_max)  # first bar strictly past x_max
+    i_max = max(0, j - 1)
+
     # Markers: each fill at its timestamp. Fill timestamps are stored as
     # naive ET (broker local time) — localize explicitly so the host
     # timezone doesn't change the result.
@@ -1328,6 +1355,7 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
             else:
                 kind, label = "close", "Close"
         markers.append({
+            "i":         _t_to_i(t_ms),
             "t":         t_ms,
             "y":         price,
             "kind":      kind,
@@ -1346,8 +1374,10 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         mfe_df = df[(df["t"] >= x_min) & (df["t"] <= mfe_upper)].dropna(subset=["h"])
         if not mfe_df.empty:
             idx = mfe_df["h"].idxmax()
+            _mfe_t = int(mfe_df.loc[idx, "t"])
             mfe_marker = {
-                "t":     int(mfe_df.loc[idx, "t"]),
+                "i":     _t_to_i(_mfe_t),
+                "t":     _mfe_t,
                 "y":     float(mfe_df.loc[idx, "h"]),
                 "kind":  "mfe",
                 "label": "MFE peak",
@@ -1404,20 +1434,36 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
                 peak_t  = int(post_df.loc[post_df["h"].idxmax(), "t"])
                 days_to_peak = (peak_t - last_exit_fill_ms) / (1000 * 86400)
 
+    # Day-boundary ticks for the compressed x-axis. Walk the bars and emit
+    # one tick at the first bar whose ET date differs from the previous —
+    # that's the start of a new trading session in compressed time.
+    axis_ticks = []
+    prev_date = None
+    for i, real_t in enumerate(_bar_ts):
+        d = datetime.fromtimestamp(real_t / 1000, tz=_ET).date()
+        if d != prev_date:
+            axis_ticks.append({"i": i, "label": d.strftime("%b %d")})
+            prev_date = d
+
     return JSONResponse({
         "occ":           occ,
         "ticker":        raw_intent["ticker"],
         "strike":        float(raw_intent["strike"]),
         "right":         raw_intent["right"],
         "expiry":        str(expiry_d),
-        "x_min":         x_min,           # epoch ms — chart axis lower bound
-        "x_max":         x_max,           # epoch ms — chart axis upper bound (last exit + 4h)
-        "entry_price":   entry_price,     # for the Entry horizontal reference line
-        "bars":          bars_payload,    # [{t: epoch_ms, c: close}]
-        "markers":       markers,         # [{t, y, kind, label, ...}]
-        "mfe_marker":    mfe_marker,      # in-trade MFE peak
+        # Compressed (RTH-only) axis — bar indices, no closed-hours gaps.
+        "i_min":         i_min,
+        "i_max":         i_max,
+        "axis_ticks":    axis_ticks,      # [{i, label}] at each new trading day
+        # Real-time bounds kept for reference but not used by the chart now.
+        "x_min":         x_min,
+        "x_max":         x_max,
+        "entry_price":   entry_price,
+        "bars":          bars_payload,    # [{i, t, c}]
+        "markers":       markers,         # [{i, t, y, kind, label, ...}]
+        "mfe_marker":    mfe_marker,
         "expiry_marker": expiry_marker,
-        "stats": {                        # capture summary block payload
+        "stats": {
             "realized_pct":  realized_pct,
             "mfe_in_pct":    mfe_in_pct,
             "mfe_exp_pct":   mfe_exp_pct,
