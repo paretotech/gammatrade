@@ -1662,12 +1662,31 @@ def levels_analysis(range_key: str = "all",
         s = _trade_outcome_stats(trades_at)
         # Resistance vs support hint — was this level above or below at entry?
         side = "resistance" if any(c["nearest_above"] == lvl for c in trades_at) else "support"
+        # Trades behind the row, in chronological order, with just enough
+        # fields to render an inline expandable detail panel without
+        # requiring a second fetch.
+        details = []
+        for c in sorted(trades_at, key=lambda x: x.get("first_entry_ts") or ""):
+            details.append({
+                "intent_id":     c["intent_id"],
+                "ticker":        c["ticker"],
+                "strike":        c.get("strike"),
+                "right":         c.get("right"),
+                "expiry":        c.get("expiry"),
+                "entry_ts":      c.get("first_entry_ts"),
+                "exit_ts":       c.get("last_exit_ts"),
+                "underlying":    c.get("underlying_at_entry"),
+                "actual_pct":    c.get("actual_pct"),
+                "realized_pnl":  c.get("realized_pnl"),
+                "capture_pct":   c.get("capture_pct"),
+                "mfe_in_pct":    c.get("mfe_in_pct"),
+            })
         per_level.append({
             "ticker":   tkr,
             "level":    lvl,
             "side":     side,
             **s,
-            "trade_ids": [c["intent_id"] for c in trades_at],
+            "trades":   details,
         })
     per_level.sort(key=lambda r: (-r["n"], -(r["win_rate"] or 0)))
 
