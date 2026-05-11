@@ -207,13 +207,14 @@ def main(argv=None) -> int:
                  contracts, entry_price, 1))
 
             # TP fills from columns "TP1 Exit" / "TP1 %" / "TP1 ROI" etc.
-            # Note the space in "TP1 %" — the master log column has a space,
-            # and values are stored as strings like "40%".
+            # Column names in the master log are inconsistent — some have a
+            # space before %, others don't (e.g. "TP1 %" but "TP2%"). Try
+            # both spellings so every tier gets its real qty.
             for tier in (1, 2, 3, 4):
                 exit_price = _f(r.get(f"TP{tier} Exit"))
                 if not exit_price:
                     continue
-                units_pct = _pct(r.get(f"TP{tier} %"))
+                units_pct = _pct(r.get(f"TP{tier} %") or r.get(f"TP{tier}%"))
                 qty = max(1, round((units_pct or 0) / 100 * contracts)) if units_pct else 1
                 qty = min(qty, contracts)
                 conn.execute(
