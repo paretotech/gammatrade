@@ -7,10 +7,22 @@ Distributed as a [Claude Code](https://claude.com/claude-code) plugin: slash com
 ## Install
 
 ```bash
-claude code plugin install github:paretotech/gammatrade
+# 1. Add this repo as a Claude Code plugin marketplace
+claude plugin marketplace add paretotech/gammatrade
+
+# 2. Install the plugin
+claude plugin install gammatrade@gammatrade
+
+# 3. Run the setup script (installs Python deps, initializes SQLite,
+#    loads the bundled reference cohort). Claude Code does not run
+#    npm-style post-install hooks, so this step is manual.
+bash "$(claude plugin path gammatrade)/hooks/post-install.sh"
 ```
 
-The post-install hook will:
+If `claude plugin path` is unavailable on your CLI version, the plugin
+is installed under `~/.claude/plugins/cache/gammatrade/gammatrade/<version>/`.
+
+The setup script will:
 1. Install Python dependencies (`fastapi`, `uvicorn`, `pandas`, etc.)
 2. Initialize a local SQLite at `~/.gamma/automation/state.db`
 3. Load the bundled anonymized reference cohort (742 closed trades)
