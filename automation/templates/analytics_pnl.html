@@ -216,13 +216,18 @@
 
 <!-- Monthly calendar — Notion-style: light bg, no color blocks, color via text only -->
 {% if calendar %}
-<div class="mb-8">
+{# The prev/next links save the current scroll Y to sessionStorage right before
+   navigation; the inline script at the bottom of this block restores it on
+   page load. Net effect: paging months feels like an in-place swap. #}
+<div class="mb-8" id="calendar">
     <div class="flex items-center justify-between mb-4 px-1">
         <div class="flex items-center gap-1">
             <a href="/analytics/pnl?range={{ range_key }}&month={{ calendar.prev_month }}"
+               onclick="sessionStorage.setItem('pnl_calendar_scrollY', window.scrollY)"
                class="w-7 h-7 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors">‹</a>
             <h2 class="text-[20px] font-semibold tracking-tight text-stone-900 px-2">{{ calendar.label }}</h2>
             <a href="/analytics/pnl?range={{ range_key }}&month={{ calendar.next_month }}"
+               onclick="sessionStorage.setItem('pnl_calendar_scrollY', window.scrollY)"
                class="w-7 h-7 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors">›</a>
         </div>
         <div class="flex items-center gap-3 text-[12px] text-stone-500">
@@ -333,5 +338,22 @@
     <p class="text-sm text-stone-500 text-center py-8">No closed trades yet.</p>
     {% endif %}
 </div>
+
+{# Restore scroll position after a month-nav click. The prev/next links above
+   stash window.scrollY into sessionStorage right before navigation; here we
+   read it back, scroll there, and clear it so a fresh visit lands at the top
+   as usual. We disable the browser's automatic scroll restoration so it
+   doesn't fight us when the user uses the back button. #}
+<script>
+(() => {
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+    const y = sessionStorage.getItem('pnl_calendar_scrollY');
+    if (y !== null) {
+        sessionStorage.removeItem('pnl_calendar_scrollY');
+        // Defer to next frame so layout settles before we scroll.
+        requestAnimationFrame(() => window.scrollTo(0, parseInt(y, 10) || 0));
+    }
+})();
+</script>
 
 {% endblock %}
