@@ -79,6 +79,44 @@ def nav_context() -> dict:
 
 # ─── Dashboard ──────────────────────────────────────────────────────────────
 
+@app.get("/playbooks", response_class=HTMLResponse)
+async def playbooks_view(request: Request, range: Optional[str] = None) -> HTMLResponse:
+    """Per-setup-tag gallery — N, WR, median ROI, total P&L plus 3
+    best-example trades and 1 cautionary tale per tag."""
+    from . import analytics as _a
+    rng = _norm_range(range)
+    return TEMPLATES.TemplateResponse(
+        "playbooks.html",
+        {
+            "request":    request,
+            "page_title": "Playbooks",
+            "range_key":  rng,
+            "rows":       _a.playbook_gallery(range_key=rng),
+            **nav_context(),
+        },
+    )
+
+
+@app.get("/today", response_class=HTMLResponse)
+async def today_view(request: Request) -> HTMLResponse:
+    """Morning-briefing dashboard — pregame summary + levels to watch +
+    recent performance + watchlist. Pure composition; no new analytics."""
+    from . import analytics as _a
+    try:
+        cap = app.state.rules.daily_loss_cap()
+    except Exception:
+        cap = 1000.0
+    return TEMPLATES.TemplateResponse(
+        "today.html",
+        {
+            "request":    request,
+            "page_title": "Today",
+            "data":       _a.today_dashboard(loss_cap=cap),
+            **nav_context(),
+        },
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     positions = state.open_positions()
@@ -1881,6 +1919,7 @@ async def analytics_winners(
             "tab_slug":   "winners",
             "range_key":  rng,
             "data":       _a.winner_profile(range_key=rng),
+            "heatmap":    _a.time_of_day_heatmap(range_key=rng),
             **nav_context(),
         },
     )

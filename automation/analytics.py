@@ -3343,3 +3343,272 @@ def pregame_accuracy(range_key: str = "all") -> dict:
         "n_total_picks": sum(p["n_picks"] for p in pregames),
         "n_taken":      sum(p["n_taken"] for p in pregames),
     }
+
+
+# ─── Today view ──────────────────────────────────────────────────────────
+# Composition of: today's pregame + stale/near-level tickers + recent
+# performance + watchlist (tickers recently traded with setups that historically print).
+
+def today_dashboard(loss_cap: float = 1000.0) -> dict:
+    """Single payload for the /today page. No new analysis — just lifts
+    existing rollups into a daily-routine artifact.
+    """
+    from . import analysis as _anl
+    from . import levels as _lv
+    from . import tagging
+    today_iso = date.today().isoformat()
+
+    # ── Today's pregame (if cached) ──────────────────────────────────
+    pregame = None
+    cached = _anl.get_cached(today_iso)
+    if cached and cached.get("status") == "ok":
+        a = cached.get("analysis") or {}
+        pregame = {
+            "headline":   (a.get("day_read") or {}).get("headline"),
+            "conviction": (a.get("day_read") or {}).get("conviction"),
+            "warnings":   (a.get("day_read") or {}).get("blackouts_or_warnings") or [],
+            "summary":    a.get("setup_summary") or {},
+            "picks":      [
+                {
+                    "ticker":  p.get("ticker"),
+                    "verdict": p.get("verdict"),
+                    "size":    p.get("suggested_size"),
+                    "plan":    p.get("plan"),
+                    "rr":      (p.get("setup_eval") or {}).get("rr_verdict"),
+                }
+                for p in (a.get("picks") or [])
+            ],
+        }
+
+    # ── Levels-to-watch: stale snapshots + near-top/bottom ─────────────
+    try:
+        from src import bars_store
+    except Exception:
+        bars_store = None
+    snaps = _lv.latest_for_all()
+    near_levels = []
+    for s in snaps:
+        live = s.current_price
+        if bars_store is not None:
+            try:
+                df = bars_store.load_underlying_bars(s.ticker)
+                if not df.empty:
+                    live = float(df["c"].dropna().iloc[-1])
+            except (FileNotFoundError, IndexError, ValueError, KeyError):
+                pass
+        if live is None:
+            continue
+        info = _lv.needs_refresh(s, live)
+        if info["stale"]:
+            near_levels.append({
+                "ticker": s.ticker,
+                "live":   round(live, 2),
+                "reasons": info["reasons"],
+                "stale":  True,
+            })
+        else:
+            # Also surface near-level (within 1%) when not strictly "stale"
+            top_above = min((lv for lv in s.levels_above if lv >= live), default=None)
+            top_below = max((lv for lv in s.levels_below if lv <= live), default=None)
+            nearest_above = (top_above, (top_above - live) / live * 100) if top_above else None
+            nearest_below = (top_below, (live - top_below) / live * 100) if top_below else None
+            for lvl, dist in filter(None, (nearest_above, nearest_below)):
+                if dist <= 0.5:
+                    near_levels.append({
+                        "ticker": s.ticker,
+                        "live":   round(live, 2),
+                        "reasons": [f"within {dist:.2f}% of mapped level ${lvl:g}"],
+                        "stale":  False,
+                    })
+                    break
+    # Cap at ~10 entries, prioritize stale
+    near_levels.sort(key=lambda r: (not r["stale"], r["ticker"]))
+    near_levels = near_levels[:10]
+
+    # ── Recent performance ────────────────────────────────────────────
+    trades = closed_trades(limit=5000)
+    today_trades = [t for t in trades if (t.get("first_entry_ts") or "")[:10] == today_iso]
+    today_pnl = round(sum(t.get("realized_pnl") or 0 for t in today_trades), 0)
+    last_5 = trades[:5]    # closed_trades is newest-first
+
+    # Equity curve quick read
+    eq = equity_curve()
+    perf = {
+        "today_pnl":         today_pnl,
+        "today_n":           len(today_trades),
+        "current_pnl":       eq.get("current_pnl"),
+        "current_drawdown":  eq.get("current_drawdown"),
+        "max_drawdown":      eq.get("max_drawdown"),
+        "loss_cap":          loss_cap,
+        "remaining":         round(loss_cap + today_pnl, 0),
+        "last_5": [
+            {
+                "intent_id":   t["intent_id"],
+                "ticker":      t["ticker"],
+                "exit_date":   (t.get("last_exit_ts") or "")[:10],
+                "realized_pnl": round(t.get("realized_pnl") or 0, 0),
+                "actual_pct":  t.get("actual_pct"),
+                "is_winner":   (t.get("realized_pnl") or 0) > 0,
+            }
+            for t in last_5
+        ],
+    }
+
+    # ── Watchlist: tickers recently traded with strong recent setups ──
+    # For each ticker traded in the last N days, compute WR + median ROI
+    # on its 0DTE / 1-2 DTE setups (since those dominate the user's book).
+    from collections import defaultdict, Counter
+    recent_tickers = Counter()
+    for t in trades[:30]:
+        recent_tickers[t["ticker"]] += 1
+    watchlist = []
+    for tkr, count in recent_tickers.most_common(8):
+        same = [t for t in trades if t["ticker"] == tkr]
+        wins = sum(1 for t in same if (t.get("realized_pnl") or 0) > 0)
+        wr = round(wins / len(same) * 100, 1) if same else None
+        med_roi = None
+        rois = [t["actual_pct"] for t in same if t.get("actual_pct") is not None]
+        if rois:
+            med_roi = round(median(rois), 1)
+        # Pull the most common tags for this ticker
+        tag_counter = Counter()
+        for t in same:
+            for tag_row in tagging.get_tags(t["intent_id"]):
+                tag_counter[tag_row["tag"]] += 1
+        top_tags = [t for t, _ in tag_counter.most_common(3) if t in tagging.TAG_INDEX]
+        watchlist.append({
+            "ticker":     tkr,
+            "n":          len(same),
+            "wr":         wr,
+            "median_roi": med_roi,
+            "top_tags":   top_tags,
+        })
+
+    return {
+        "date":        today_iso,
+        "pregame":     pregame,
+        "near_levels": near_levels,
+        "perf":        perf,
+        "watchlist":   watchlist,
+    }
+
+
+# ─── Playbook gallery ────────────────────────────────────────────────────
+# Per-tag aggregation across closed trades, with best-example and
+# cautionary-tale picks for the gallery card.
+
+def playbook_gallery(range_key: str = "all") -> list[dict]:
+    """One card-row per setup tag with N, WR, median ROI, total P&L,
+    plus 3 example winners + 1 cautionary loser per tag."""
+    from . import tagging
+    trades = closed_trades(limit=5000, range_key=range_key)
+    by_intent = {t["intent_id"]: t for t in trades}
+
+    # Pull every (intent_id, tag) row
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT intent_id, tag FROM trade_tags"
+        ).fetchall()
+    by_tag: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        t = by_intent.get(r["intent_id"])
+        if t is not None:
+            by_tag[r["tag"]].append(t)
+
+    out = []
+    for key, fam, label, desc in tagging.TAG_CATALOG:
+        tag_trades = by_tag.get(key, [])
+        n = len(tag_trades)
+        if n == 0:
+            continue
+        wins = sum(1 for t in tag_trades if (t.get("realized_pnl") or 0) > 0)
+        rois = [t.get("actual_pct") for t in tag_trades if t.get("actual_pct") is not None]
+        caps = [t.get("capture_pct") for t in tag_trades if t.get("capture_pct") is not None]
+
+        # Best examples — top winners by realized P&L
+        sorted_by_pnl = sorted(tag_trades, key=lambda t: t.get("realized_pnl") or 0, reverse=True)
+        best = sorted_by_pnl[:3]
+        worst = sorted_by_pnl[-1:] if sorted_by_pnl[-1].get("realized_pnl", 0) < 0 else []
+
+        def _slim(t):
+            return {
+                "intent_id":    t["intent_id"],
+                "ticker":       t["ticker"],
+                "strike":       t.get("strike"),
+                "right":        t.get("right"),
+                "expiry":       t.get("expiry"),
+                "entry_date":   (t.get("first_entry_ts") or "")[:10],
+                "realized_pnl": round(t.get("realized_pnl") or 0, 0),
+                "actual_pct":   t.get("actual_pct"),
+                "capture_pct":  t.get("capture_pct"),
+            }
+
+        out.append({
+            "key":             key,
+            "family":          fam,
+            "label":           label,
+            "desc":            desc,
+            "n":               n,
+            "wins":            wins,
+            "losses":          n - wins,
+            "win_rate":        round(wins / n * 100, 1),
+            "median_roi":      round(median(rois), 1) if rois else None,
+            "median_capture":  round(median(caps), 1) if caps else None,
+            "total_pnl":       round(sum(t.get("realized_pnl") or 0 for t in tag_trades), 0),
+            "avg_pnl":         round(sum(t.get("realized_pnl") or 0 for t in tag_trades) / n, 0),
+            "best":            [_slim(t) for t in best],
+            "worst":           [_slim(t) for t in worst],
+        })
+    # Sort: families in catalog order, then by N desc within family
+    family_order = {"level": 0, "structure": 1, "time": 2, "execution": 3}
+    out.sort(key=lambda r: (family_order.get(r["family"], 99), -r["n"]))
+    return out
+
+
+# ─── Time-of-day expectancy heatmap ──────────────────────────────────────
+# Per-hour-of-entry win rate + median ROI + total P&L. Hour 9..15 covers
+# regular trading hours; extended-hours entries fall in 4..8 or 16..19.
+
+def time_of_day_heatmap(range_key: str = "all") -> dict:
+    """Grid: entry hour (rows) × (n, win_rate, median_roi, total_pnl)."""
+    trades = closed_trades(limit=5000, range_key=range_key)
+    by_hour: dict[int, list[dict]] = defaultdict(list)
+    for t in trades:
+        ts = t.get("first_entry_ts")
+        if not ts:
+            continue
+        try:
+            h = datetime.fromisoformat(ts[:19]).hour
+        except ValueError:
+            continue
+        by_hour[h].append(t)
+
+    rows = []
+    # Pre-market 7-9, RTH 9-16, after-hours 16-20 — only show hours we have
+    for h in sorted(by_hour.keys()):
+        bucket = by_hour[h]
+        n = len(bucket)
+        wins = sum(1 for t in bucket if (t.get("realized_pnl") or 0) > 0)
+        rois = [t.get("actual_pct") for t in bucket if t.get("actual_pct") is not None]
+        rows.append({
+            "hour":       h,
+            "label":      f"{h:02d}:00",
+            "n":          n,
+            "wins":       wins,
+            "win_rate":   round(wins / n * 100, 1),
+            "median_roi": round(median(rois), 1) if rois else None,
+            "total_pnl":  round(sum(t.get("realized_pnl") or 0 for t in bucket), 0),
+            "avg_pnl":    round(sum(t.get("realized_pnl") or 0 for t in bucket) / n, 0),
+        })
+
+    # Headline best/worst hour by total P&L (with n≥3 to filter anecdote)
+    qualified = [r for r in rows if r["n"] >= 3]
+    best_hour  = max(qualified, key=lambda r: r["total_pnl"], default=None)
+    worst_hour = min(qualified, key=lambda r: r["total_pnl"], default=None)
+
+    return {
+        "rows":       rows,
+        "best_hour":  best_hour,
+        "worst_hour": worst_hour,
+        "n_total":    sum(r["n"] for r in rows),
+    }

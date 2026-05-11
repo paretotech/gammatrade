@@ -129,4 +129,87 @@
     entry-time, ≥2d for DTE).
 </p>
 
+{# ─── Time-of-day expectancy heatmap ──────────────────────────────── #}
+{% if heatmap and heatmap.rows %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mt-8">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">Time-of-day expectancy</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            Entries grouped by ET hour. Cell color is win rate; bar height shows total $.
+            {% if heatmap.best_hour and heatmap.worst_hour %}
+            Best hour
+            <span class="mono font-medium text-emerald-700">{{ heatmap.best_hour.label }}</span>
+            ({{ heatmap.best_hour.win_rate }}% WR · ${{ heatmap.best_hour.total_pnl | int }}),
+            worst hour
+            <span class="mono font-medium text-red-700">{{ heatmap.worst_hour.label }}</span>
+            ({{ heatmap.worst_hour.win_rate }}% WR · ${{ heatmap.worst_hour.total_pnl | int }}).
+            {% endif %}
+        </p>
+    </div>
+
+    {# Visual grid: one column per hour, bar height = total P&L magnitude. #}
+    {% set max_abs = (heatmap.rows | map(attribute='total_pnl') | map('abs') | max) or 1 %}
+    <div class="flex items-end gap-2 px-5 py-4 border-b border-stone-100" style="height: 180px;">
+        {% for r in heatmap.rows %}
+        <div class="flex-1 flex flex-col items-center justify-end h-full"
+             title="{{ r.label }} · n={{ r.n }} · WR {{ r.win_rate }}% · {% if r.median_roi is not none %}med ROI {{ r.median_roi }}%{% endif %} · total ${{ r.total_pnl | int }}">
+            <span class="text-[10px] mono mb-1
+                {% if r.total_pnl > 0 %}text-emerald-700{% elif r.total_pnl < 0 %}text-red-700{% else %}text-stone-400{% endif %}">
+                {% if r.total_pnl >= 0 %}${{ "%.0f"|format(r.total_pnl) }}{% else %}-${{ "%.0f"|format(r.total_pnl|abs) }}{% endif %}
+            </span>
+            <div class="w-full rounded-t-sm
+                {% if r.win_rate >= 70 %}bg-emerald-500
+                {% elif r.win_rate >= 55 %}bg-emerald-300
+                {% elif r.win_rate >= 45 %}bg-stone-300
+                {% elif r.win_rate >= 30 %}bg-red-300
+                {% else %}bg-red-500{% endif %}"
+                style="height: {{ (r.total_pnl|abs / max_abs * 100) | round(0) }}%; min-height: 4px;"></div>
+            <span class="text-[10px] mono text-stone-500 mt-1">{{ r.label }}</span>
+            <span class="text-[9px] text-stone-400">n={{ r.n }}</span>
+        </div>
+        {% endfor %}
+    </div>
+
+    {# Detail table — full numbers in case the bars are hard to read #}
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 bg-stone-50">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium">Hour (ET)</th>
+                <th class="text-right py-2 font-medium">N</th>
+                <th class="text-right py-2 font-medium">Win rate</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-right py-2 font-medium">Avg P&amp;L</th>
+                <th class="text-right pr-5 py-2 font-medium">Total P&amp;L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in heatmap.rows %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2 mono font-medium">{{ r.label }}</td>
+                <td class="py-2 mono text-right text-stone-500">{{ r.n }}</td>
+                <td class="py-2 mono text-right font-medium
+                    {% if r.win_rate >= 70 %}text-emerald-700
+                    {% elif r.win_rate < 50 %}text-red-700{% endif %}">{{ r.win_rate }}%</td>
+                <td class="py-2 mono text-right
+                    {% if r.median_roi and r.median_roi > 0 %}text-emerald-700
+                    {% elif r.median_roi and r.median_roi < 0 %}text-red-700{% endif %}">
+                    {% if r.median_roi is not none %}{{ "%+.1f"|format(r.median_roi) }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right
+                    {% if r.avg_pnl > 0 %}text-emerald-700
+                    {% elif r.avg_pnl < 0 %}text-red-700{% endif %}">
+                    {% if r.avg_pnl >= 0 %}${{ "%.0f"|format(r.avg_pnl) }}{% else %}-${{ "%.0f"|format(r.avg_pnl|abs) }}{% endif %}
+                </td>
+                <td class="py-2 mono text-right pr-5 font-medium
+                    {% if r.total_pnl > 0 %}text-emerald-600
+                    {% elif r.total_pnl < 0 %}text-red-600{% endif %}">
+                    {% if r.total_pnl >= 0 %}${{ "%.0f"|format(r.total_pnl) }}{% else %}-${{ "%.0f"|format(r.total_pnl|abs) }}{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {% endblock %}
