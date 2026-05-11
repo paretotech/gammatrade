@@ -22,20 +22,37 @@
 <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
     <div>{% include "_date_range_chips.html" %}</div>
 
-    <form method="post" action="/analytics/trades/import" enctype="multipart/form-data"
-          x-data="{ filename: '' }" class="flex items-center gap-2"
-          title="Accepts TD orderStatus CSV or IBKR TRANSACTIONS CSV — auto-detects format">
-        <label class="inline-flex items-center gap-2 cursor-pointer text-[11px] text-stone-600 hover:text-stone-900">
-            <input type="file" name="td_csv" accept=".csv" required class="hidden"
-                   @change="filename = $event.target.files[0]?.name || ''; if(filename) $event.target.form.submit();">
-            <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-stone-900 hover:bg-stone-700 text-white text-[12px] font-medium transition-colors">
-                + Import broker CSV
-            </span>
-        </label>
-        <template x-if="filename">
-            <span class="text-[11px] text-stone-500 mono" x-text="filename"></span>
-        </template>
-    </form>
+    <div class="flex items-center gap-2 flex-wrap">
+        <form method="post" action="/analytics/trades/import" enctype="multipart/form-data"
+              x-data="{ filename: '' }" class="flex items-center gap-2"
+              title="TD Ameritrade orderStatus CSV">
+            <label class="inline-flex items-center gap-2 cursor-pointer text-[11px] text-stone-600 hover:text-stone-900">
+                <input type="file" name="td_csv" accept=".csv" required class="hidden"
+                       @change="filename = $event.target.files[0]?.name || ''; if(filename) $event.target.form.submit();">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-stone-900 hover:bg-stone-700 text-white text-[12px] font-medium transition-colors">
+                    + Import TD CSV
+                </span>
+            </label>
+            <template x-if="filename">
+                <span class="text-[11px] text-stone-500 mono" x-text="filename"></span>
+            </template>
+        </form>
+
+        <form method="post" action="/analytics/trades/import-ibkr" enctype="multipart/form-data"
+              x-data="{ filename: '' }" class="flex items-center gap-2"
+              title="IBKR Flex Transaction History CSV">
+            <label class="inline-flex items-center gap-2 cursor-pointer text-[11px] text-stone-600 hover:text-stone-900">
+                <input type="file" name="ibkr_csv" accept=".csv" required class="hidden"
+                       @change="filename = $event.target.files[0]?.name || ''; if(filename) $event.target.form.submit();">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white border border-stone-300 hover:bg-stone-50 text-stone-800 text-[12px] font-medium transition-colors">
+                    + Import IBKR CSV
+                </span>
+            </label>
+            <template x-if="filename">
+                <span class="text-[11px] text-stone-500 mono" x-text="filename"></span>
+            </template>
+        </form>
+    </div>
 </div>
 
 {# Reset the mb-4 from the chips partial since we just wrapped it #}

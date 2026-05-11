@@ -9,7 +9,7 @@
       "name": "gammatrade",
       "source": "./",
       "description": "Notion-style options trading dashboard with broker-CSV import, analytics, and Claude-powered pregame analysis.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "homepage": "https://github.com/paretotech/gammatrade",
       "license": "MIT",
       "keywords": ["trading", "options", "analytics", "tdameritrade", "ibkr", "polygon"]

@@ -1151,6 +1151,69 @@ async def analytics_trades_import(
     )
 
 
+@app.post("/analytics/trades/import-ibkr", response_class=HTMLResponse)
+async def analytics_trades_import_ibkr(
+    request: Request,
+    ibkr_csv: UploadFile = File(...),
+) -> RedirectResponse:
+    """Accept an IBKR Flex Transaction History CSV and run the IBKR
+    ingestion pipeline.
+
+    Saves to data/ibkr_exports/ then runs scripts/import_ibkr_to_db.py
+    in a detached subprocess. The IBKR pipeline writes directly to the
+    automation SQLite — it does NOT touch data/master_trade_log.csv,
+    which is TD-shaped and not suitable for IBKR data.
+    """
+    import subprocess
+    from pathlib import Path as _Path
+
+    REPO = _Path(__file__).resolve().parent.parent
+    exports_dir = REPO / "data" / "ibkr_exports"
+    exports_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = (ibkr_csv.filename or "ibkr_import.csv").strip()
+    if not filename.lower().endswith(".csv"):
+        return RedirectResponse(
+            url=f"/analytics/trades?import_error={urlquote('Only .csv files accepted')}",
+            status_code=303,
+        )
+
+    safe_name = filename.replace("/", "_").replace("..", "")
+    dest = exports_dir / safe_name
+    contents = await ibkr_csv.read()
+    if len(contents) == 0:
+        return RedirectResponse(
+            url=f"/analytics/trades?import_error={urlquote('Uploaded file was empty')}",
+            status_code=303,
+        )
+    if len(contents) > 5 * 1024 * 1024:
+        return RedirectResponse(
+            url=f"/analytics/trades?import_error={urlquote('File too large (>5MB)')}",
+            status_code=303,
+        )
+    dest.write_bytes(contents)
+    telemetry.log_event("ibkr_import_uploaded", {
+        "filename": safe_name, "size_bytes": len(contents),
+    })
+
+    log_path = REPO / "data" / "ibkr_exports" / "_import.log"
+    cmd = (
+        f"cd {REPO} && "
+        f"python3 -u scripts/import_ibkr_to_db.py --dir data/ibkr_exports"
+    )
+    subprocess.Popen(
+        ["bash", "-c", cmd],
+        stdout=open(log_path, "ab"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+    return RedirectResponse(
+        url=f"/analytics/trades?imported=started",
+        status_code=303,
+    )
+
+
 @app.get("/analytics/tickers", response_class=HTMLResponse)
 async def analytics_tickers(request: Request, range: Optional[str] = None) -> HTMLResponse:
     from . import analytics as _a
