@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page_title }} · Gamma</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10" defer></script>
+    <script src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js" defer></script>
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+    <style>
+        :root { font-family: 'Inter', system-ui, sans-serif; }
+        .mono { font-family: 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', Menlo, monospace; font-feature-settings: "tnum"; }
+        body { -webkit-font-smoothing: antialiased; }
+        .nav-active { background: rgba(255,255,255,0.08); color: white; }
+        .nav-link:hover { background: rgba(255,255,255,0.04); }
+        .card { transition: box-shadow 0.15s ease; }
+        .card:hover { box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03); }
+        details summary::-webkit-details-marker { display: none; }
+        details summary { cursor: pointer; list-style: none; }
+        ::selection { background: #d1fae5; }
+    </style>
+</head>
+<body class="h-full bg-stone-50 text-stone-900">
+
+<div class="flex h-full">
+
+    <!-- Sidebar -->
+    <aside class="w-60 bg-stone-900 text-stone-300 flex flex-col flex-shrink-0">
+        <div class="px-5 pt-5 pb-3">
+            <div class="flex items-center gap-2">
+                <div class="w-7 h-7 rounded bg-emerald-500 flex items-center justify-center text-stone-900 font-bold text-sm">γ</div>
+                <div class="font-semibold text-stone-100 text-[15px]">Gamma</div>
+            </div>
+            <div class="text-xs text-stone-500 mt-0.5 ml-9">Automation</div>
+        </div>
+
+        <nav class="flex-1 px-2 mt-2 text-[13.5px] space-y-0.5">
+            {% for href, label, icon in nav_items %}
+            <a href="{{ href }}" class="nav-link flex items-center gap-2.5 px-3 py-1.5 rounded-md transition-colors {% if request.url.path == href or (href != '/' and request.url.path.startswith(href)) %}nav-active{% endif %}">
+                <span class="text-stone-500 w-4 inline-block text-center">·</span>
+                <span>{{ label }}</span>
+            </a>
+            {% endfor %}
+        </nav>
+
+        <div class="px-3 pb-3 pt-3 mx-2 border-t border-stone-800 text-[12px]">
+            {% if kill_active %}
+            <div class="flex items-center gap-2 text-red-400">
+                <span class="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse"></span>
+                Kill switch ACTIVE
+            </div>
+            {% elif pause_active %}
+            <div class="flex items-center gap-2 text-amber-400">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                System paused
+            </div>
+            {% else %}
+            <div class="flex items-center gap-2 text-emerald-400">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                System live
+            </div>
+            {% endif %}
+            <div class="text-stone-600 mt-1">Mock broker</div>
+        </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="flex-1 overflow-auto">
+        <div class="max-w-6xl mx-auto px-10 py-8">
+            <div class="flex items-baseline gap-3 mb-6">
+                <h1 class="text-[28px] font-semibold tracking-tight text-stone-900">{{ page_title }}</h1>
+                {% block page_meta %}{% endblock %}
+            </div>
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+</div>
+
+</body>
+</html>

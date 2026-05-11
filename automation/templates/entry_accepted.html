@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="max-w-2xl">
+
+    <div class="flex items-center gap-2.5 mb-1">
+        <div class="w-2 h-2 rounded-full bg-emerald-500"></div>
+        <span class="text-emerald-700 text-sm font-medium">Entry accepted</span>
+    </div>
+    <p class="text-stone-500 text-sm mb-6">Order manager will place entry → BE stop → TP ladder.</p>
+
+    {% if risk_eval %}{% include "_risk_panel.html" %}{% endif %}
+
+    <div class="bg-white border border-stone-200 rounded-lg p-6 mb-6">
+        <div class="grid grid-cols-2 gap-y-4 gap-x-8 text-sm">
+            <div>
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Contract</div>
+                <div class="mono mt-1 font-medium">{{ intent.ticker }} {{ intent.expiry }} {{ intent.strike|int }}{{ intent.right }}</div>
+            </div>
+            <div>
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Quantity</div>
+                <div class="mono mt-1 font-medium">{{ intent.contracts }}</div>
+            </div>
+            <div>
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Order type</div>
+                <div class="mono mt-1">{{ intent.order_type }}{% if intent.limit_price %} @ {{ "%.2f"|format(intent.limit_price) }}{% endif %}</div>
+            </div>
+            <div>
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Regime / DTE</div>
+                <div class="mt-1">{{ intent.regime_tag }} / {{ dte }} DTE</div>
+            </div>
+            <div>
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Chain role</div>
+                <div class="mt-1">{{ intent.chain_role }}</div>
+            </div>
+            <div>
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Sector</div>
+                <div class="mt-1">{{ intent.sector }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-white border border-stone-200 rounded-lg p-6 mb-6">
+        <div class="flex items-baseline justify-between mb-3">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">TP ladder</div>
+            <div class="text-[11px] text-stone-500">{{ ladder.label }}</div>
+        </div>
+        <table class="w-full text-sm">
+            <thead class="text-[11px] uppercase tracking-wider text-stone-500">
+                <tr class="border-b border-stone-200">
+                    <th class="text-left py-2 font-medium">Tier</th>
+                    <th class="text-right py-2 font-medium">Target ROI</th>
+                    <th class="text-right py-2 font-medium">Split</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                <tr>
+                    <td class="py-2.5">TP1</td>
+                    <td class="py-2.5 text-right mono text-emerald-700 font-medium">{% if ladder.tp1_pct is not none %}+{{ "%.1f"|format(ladder.tp1_pct * 100) }}%{% else %}—{% endif %}</td>
+                    <td class="py-2.5 text-right mono">{{ "%.0f"|format(ladder.splits[0] * 100) }}%</td>
+                </tr>
+                <tr>
+                    <td class="py-2.5 {% if not ladder.tp2_pct %}text-stone-300{% endif %}">TP2</td>
+                    <td class="py-2.5 text-right mono {% if ladder.tp2_pct %}text-emerald-700 font-medium{% else %}text-stone-300{% endif %}">{% if ladder.tp2_pct %}+{{ "%.1f"|format(ladder.tp2_pct * 100) }}%{% else %}—{% endif %}</td>
+                    <td class="py-2.5 text-right mono {% if not ladder.tp2_pct %}text-stone-300{% endif %}">{{ "%.0f"|format(ladder.splits[1] * 100) }}%</td>
+                </tr>
+                <tr>
+                    <td class="py-2.5 {% if not ladder.tp3_pct %}text-stone-300{% endif %}">TP3</td>
+                    <td class="py-2.5 text-right mono {% if ladder.tp3_pct %}text-emerald-700 font-medium{% else %}text-stone-300{% endif %}">{% if ladder.tp3_pct %}+{{ "%.1f"|format(ladder.tp3_pct * 100) }}%{% else %}—{% endif %}</td>
+                    <td class="py-2.5 text-right mono {% if not ladder.tp3_pct %}text-stone-300{% endif %}">{{ "%.0f"|format(ladder.splits[2] * 100) }}%</td>
+                </tr>
+                <tr class="border-t border-stone-200">
+                    <td class="py-2.5 text-stone-500">BE stop</td>
+                    <td class="py-2.5 text-right mono text-stone-600">entry × {{ "%.2f"|format(ladder.stop_mult) }}</td>
+                    <td class="py-2.5 text-right mono">100%</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="bg-white border border-stone-200 rounded-lg p-5 mb-6">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Roll plan</div>
+        {% if roll_pct is none %}
+        <div class="text-sm text-stone-700">No chain roll planned. TP1 fires → position closes; system does not propose R2.</div>
+        {% else %}
+        <div class="flex items-baseline gap-3">
+            <div class="mono text-2xl font-semibold text-stone-900">{{ "%.0f"|format(roll_pct * 100) }}%</div>
+            <div class="text-sm text-stone-600">of TP1 realized profit retained, R2 proposed when TP1 fires.</div>
+        </div>
+        {% endif %}
+        <div class="text-[11px] text-stone-500 mt-2">Plan: <span class="font-medium">{{ intent.roll_plan }}</span></div>
+    </div>
+
+    <div class="text-xs text-stone-500 mb-6">
+        Intent ID:
+        <span class="mono">{{ intent_id }}</span>
+    </div>
+
+    <div class="flex gap-3">
+        <a href="/" class="bg-stone-900 hover:bg-stone-700 text-white px-5 py-2 rounded-md text-sm font-medium transition-colors">Back to dashboard</a>
+        <a href="/entries/new" class="text-sm text-stone-500 hover:text-stone-900 self-center">Submit another</a>
+    </div>
+
+</div>
+
+{% endblock %}

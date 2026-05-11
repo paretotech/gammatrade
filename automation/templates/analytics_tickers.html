@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+
+{% macro fmt_minutes(m) %}
+    {%- if m is none -%}
+        <span class="text-stone-300">—</span>
+    {%- elif m < 60 -%}
+        {{ m | round(0) | int }}m
+    {%- elif m < 60 * 24 -%}
+        {{ (m / 60) | round(1) }}h
+    {%- else -%}
+        {{ (m / (60 * 24)) | round(1) }}d
+    {%- endif -%}
+{% endmacro %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden"
+     x-data='{
+        rows: {{ rows | tojson }},
+        sortKey: "total_pnl",
+        sortDir: -1,
+        sort(key) {
+            if (this.sortKey === key) { this.sortDir = -this.sortDir; }
+            else { this.sortKey = key; this.sortDir = -1; }
+            this.rows.sort((a, b) => {
+                const av = a[key], bv = b[key];
+                if (typeof av === "string") return this.sortDir * av.localeCompare(bv);
+                return this.sortDir * ((av > bv) - (av < bv));
+            });
+        },
+        arrow(key) { return this.sortKey === key ? (this.sortDir === -1 ? "↓" : "↑") : ""; }
+     }'>
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">Underlying leaderboard</h2>
+        <span class="text-[11px] text-stone-500" x-text="rows.length + ' ticker' + (rows.length === 1 ? '' : 's') + ' · min 2 trades · click headers to sort'"></span>
+    </div>
+
+    <template x-if="rows.length === 0">
+        <p class="text-sm text-stone-500 text-center py-12">Not enough closed trades yet (min 2 per ticker) for the selected range.</p>
+    </template>
+
+    <template x-if="rows.length > 0">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider select-none">
+                <tr>
+                    <th class="text-left px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('ticker')">
+                        Ticker <span x-text="arrow('ticker')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('n')">
+                        N <span x-text="arrow('n')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('win_rate')">
+                        Win rate <span x-text="arrow('win_rate')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('median_roi_pct')">
+                        Median ROI <span x-text="arrow('median_roi_pct')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('total_pnl')">
+                        Total P&L <span x-text="arrow('total_pnl')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('best_pnl')">
+                        Best <span x-text="arrow('best_pnl')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('worst_pnl')">
+                        Worst <span x-text="arrow('worst_pnl')"></span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                <template x-for="r in rows" :key="r.ticker">
+                    <tr class="hover:bg-stone-50">
+                        <td class="px-3 py-2 mono font-medium" x-text="r.ticker"></td>
+                        <td class="px-3 py-2 text-right mono text-[12px] text-stone-500" x-text="r.n"></td>
+                        <td class="px-3 py-2 text-right">
+                            <div class="inline-flex items-center gap-2">
+                                <div class="w-16 h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                                    <div class="bg-emerald-500 h-full" :style="'width: ' + r.win_rate + '%'"></div>
+                                </div>
+                                <span class="mono text-[12px]" x-text="r.win_rate + '%'"></span>
+                            </div>
+                        </td>
+                        <td class="px-3 py-2 text-right mono text-[12px]"
+                            :class="r.median_roi_pct > 0 ? 'text-emerald-700' : (r.median_roi_pct < 0 ? 'text-red-700' : '')"
+                            x-text="(r.median_roi_pct >= 0 ? '+' : '') + r.median_roi_pct + '%'"></td>
+                        <td class="px-3 py-2 text-right mono font-medium"
+                            :class="r.total_pnl > 0 ? 'text-emerald-700' : (r.total_pnl < 0 ? 'text-red-700' : '')"
+                            x-text="(r.total_pnl >= 0 ? '+$' : '-$') + Math.abs(r.total_pnl).toLocaleString(undefined, {maximumFractionDigits: 0})"></td>
+                        <td class="px-3 py-2 text-right mono text-[12px] text-emerald-700"
+                            x-text="'+$' + Math.abs(r.best_pnl).toLocaleString(undefined, {maximumFractionDigits: 0})"></td>
+                        <td class="px-3 py-2 text-right mono text-[12px]"
+                            :class="r.worst_pnl < 0 ? 'text-red-700' : ''"
+                            x-text="(r.worst_pnl >= 0 ? '+$' : '-$') + Math.abs(r.worst_pnl).toLocaleString(undefined, {maximumFractionDigits: 0})"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </template>
+</div>
+
+<p class="text-[11px] text-stone-500 mt-3 leading-relaxed max-w-2xl">
+    Median ROI used over mean — option returns are heavily skewed (bounded at -100%, unbounded upside) so means get pulled around by tail trades.
+</p>
+
+{% if ttp_rows %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mt-8">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">Time to TP by underlying</h2>
+        <span class="text-[11px] text-stone-500">median minutes from entry fill to TP fill · ranked by trade count</span>
+    </div>
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+            <tr>
+                <th class="text-left px-3 py-2 font-medium">Ticker</th>
+                <th class="text-right px-3 py-2 font-medium">N</th>
+                <th class="text-right px-3 py-2 font-medium">TP1</th>
+                <th class="text-right px-3 py-2 font-medium">TP2</th>
+                <th class="text-right px-3 py-2 font-medium">TP3</th>
+                <th class="text-right px-3 py-2 font-medium" title="trades that hit each tier">Hits 1 / 2 / 3</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in ttp_rows %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-3 py-2 mono font-medium">{{ r.ticker }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-500">{{ r.n }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ fmt_minutes(r.t1_min) }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ fmt_minutes(r.t2_min) }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ fmt_minutes(r.t3_min) }}</td>
+                <td class="px-3 py-2 text-right mono text-[11px] text-stone-500">
+                    {{ r.hits1 }} / {{ r.hits2 }} / {{ r.hits3 }}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if ttp_total %}
+            <tr class="bg-stone-50 border-t-2 border-stone-200 font-medium">
+                <td class="px-3 py-2 mono">{{ ttp_total.ticker }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-700">{{ ttp_total.n }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ fmt_minutes(ttp_total.t1_min) }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ fmt_minutes(ttp_total.t2_min) }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ fmt_minutes(ttp_total.t3_min) }}</td>
+                <td class="px-3 py-2 text-right mono text-[11px] text-stone-700">
+                    {{ ttp_total.hits1 }} / {{ ttp_total.hits2 }} / {{ ttp_total.hits3 }}
+                </td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+<p class="text-[11px] text-stone-500 mt-2 leading-relaxed max-w-2xl">
+    Format: <span class="mono">12m</span> = minutes, <span class="mono">2.5h</span> = hours, <span class="mono">1.2d</span> = days.
+    "Hits" column shows count of trades that reached each TP tier — gaps reveal where the ladder under-fills.
+</p>
+{% endif %}
+
+{% if mm_rows %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mt-8">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">MFE / MAE by underlying</h2>
+        <span class="text-[11px] text-stone-500">median % from entry · ranked by trade count</span>
+    </div>
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+            <tr>
+                <th class="text-left px-3 py-2 font-medium">Ticker</th>
+                <th class="text-right px-3 py-2 font-medium">N</th>
+                <th class="text-right px-3 py-2 font-medium" title="Peak option price between entry and your exit">
+                    MFE in trade
+                </th>
+                <th class="text-right px-3 py-2 font-medium" title="Median realized ROI on the closed trade">
+                    Actual %
+                </th>
+                <th class="text-right px-3 py-2 font-medium" title="Realized ÷ MFE-in-trade — what fraction of the peak you kept">
+                    Capture %
+                </th>
+                <th class="text-right px-3 py-2 font-medium" title="Peak option price between entry and option expiry — counterfactual if held to expiration">
+                    MFE to expiry
+                </th>
+                <th class="text-right px-3 py-2 font-medium" title="Actual ÷ MFE-to-expiry — fraction of the held-to-expiry peak you captured">
+                    Cap. exp %
+                </th>
+                <th class="text-right px-3 py-2 font-medium" title="Trough option price between entry and exit — worst drawdown sat through">
+                    MAE in trade
+                </th>
+                <th class="text-right px-3 py-2 font-medium" title="Trough option price between entry and option expiry — worst drawdown if held to expiration">
+                    MAE to expiry
+                </th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in mm_rows %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-3 py-2 mono font-medium">{{ r.ticker }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-500">{{ r.n }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.mfe_in_pct is not none and r.mfe_in_pct > 0 %}text-emerald-700{% elif r.mfe_in_pct is not none and r.mfe_in_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.mfe_in_pct is none %}<span class="text-stone-300">—</span>{% else %}{% if r.mfe_in_pct >= 0 %}+{% endif %}{{ r.mfe_in_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.actual_pct is not none and r.actual_pct > 0 %}text-emerald-700{% elif r.actual_pct is not none and r.actual_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.actual_pct is none %}<span class="text-stone-300">—</span>{% else %}{% if r.actual_pct >= 0 %}+{% endif %}{{ r.actual_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-700">
+                    {% if r.capture_pct is none %}<span class="text-stone-300">—</span>{% else %}{{ r.capture_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.mfe_exp_pct is not none and r.mfe_exp_pct > 0 %}text-emerald-700{% elif r.mfe_exp_pct is not none and r.mfe_exp_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.mfe_exp_pct is none %}<span class="text-stone-300">—</span>{% else %}{% if r.mfe_exp_pct >= 0 %}+{% endif %}{{ r.mfe_exp_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-700">
+                    {% if r.capture_exp_pct is none %}<span class="text-stone-300">—</span>{% else %}{{ r.capture_exp_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.mae_in_pct is not none and r.mae_in_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.mae_in_pct is none %}<span class="text-stone-300">—</span>{% else %}{% if r.mae_in_pct >= 0 %}+{% endif %}{{ r.mae_in_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.mae_exp_pct is not none and r.mae_exp_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.mae_exp_pct is none %}<span class="text-stone-300">—</span>{% else %}{% if r.mae_exp_pct >= 0 %}+{% endif %}{{ r.mae_exp_pct }}%{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if mm_total %}
+            <tr class="bg-stone-50 border-t-2 border-stone-200 font-medium">
+                <td class="px-3 py-2 mono">{{ mm_total.ticker }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-700">{{ mm_total.n }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if mm_total.mfe_in_pct is not none and mm_total.mfe_in_pct > 0 %}text-emerald-700{% endif %}">
+                    {% if mm_total.mfe_in_pct is none %}—{% else %}{% if mm_total.mfe_in_pct >= 0 %}+{% endif %}{{ mm_total.mfe_in_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if mm_total.actual_pct is not none and mm_total.actual_pct > 0 %}text-emerald-700{% elif mm_total.actual_pct is not none and mm_total.actual_pct < 0 %}text-red-700{% endif %}">
+                    {% if mm_total.actual_pct is none %}—{% else %}{% if mm_total.actual_pct >= 0 %}+{% endif %}{{ mm_total.actual_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-800">
+                    {% if mm_total.capture_pct is none %}—{% else %}{{ mm_total.capture_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if mm_total.mfe_exp_pct is not none and mm_total.mfe_exp_pct > 0 %}text-emerald-700{% endif %}">
+                    {% if mm_total.mfe_exp_pct is none %}—{% else %}{% if mm_total.mfe_exp_pct >= 0 %}+{% endif %}{{ mm_total.mfe_exp_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-800">
+                    {% if mm_total.capture_exp_pct is none %}—{% else %}{{ mm_total.capture_exp_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if mm_total.mae_in_pct is not none and mm_total.mae_in_pct < 0 %}text-red-700{% endif %}">
+                    {% if mm_total.mae_in_pct is none %}—{% else %}{% if mm_total.mae_in_pct >= 0 %}+{% endif %}{{ mm_total.mae_in_pct }}%{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if mm_total.mae_exp_pct is not none and mm_total.mae_exp_pct < 0 %}text-red-700{% endif %}">
+                    {% if mm_total.mae_exp_pct is none %}—{% else %}{% if mm_total.mae_exp_pct >= 0 %}+{% endif %}{{ mm_total.mae_exp_pct }}%{% endif %}
+                </td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+<p class="text-[11px] text-stone-500 mt-2 leading-relaxed max-w-2xl">
+    <span class="font-medium text-stone-700">MFE in trade</span> = peak option price between entry and your exit.
+    <span class="font-medium text-stone-700">Actual %</span> = median realized ROI.
+    <span class="font-medium text-stone-700">Capture %</span> = Actual ÷ MFE-in-trade (how much of the peak you kept).
+    <span class="font-medium text-stone-700">MFE to expiry</span> = peak if held to expiry (counterfactual).
+    <span class="font-medium text-stone-700">Cap. exp %</span> = Actual ÷ MFE-to-expiry (how much of the held-to-expiry peak you got).
+    <span class="font-medium text-stone-700">MAE in trade</span> = worst drawdown sat through.
+    <span class="font-medium text-stone-700">MAE to expiry</span> = worst drawdown if held to expiry (often −100% for OTM options that expired worthless).
+</p>
+{% endif %}
+
+{% endblock %}

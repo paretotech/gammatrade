@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_settings_tabs.html" %}
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-2xl">
+    Engine is fixed; this YAML is the entire rule surface. Updates here
+    reload immediately. Source citations point to the memory file each table
+    came from.
+</p>
+
+<!-- Mechanical exits — selectable per trade -->
+<div class="bg-stone-50 border border-stone-200 rounded-lg p-5 mb-8">
+    <div class="flex items-baseline justify-between mb-3">
+        <div class="text-[11px] uppercase tracking-wider text-stone-700 font-semibold">Mechanical stop discipline · selected per trade at entry</div>
+        <span class="text-[11px] text-stone-500">strategy_rules.md Tier 1</span>
+    </div>
+
+    <p class="text-sm text-stone-600 mb-4 leading-relaxed">
+        Pick the stop discipline on the New Entry form. The engine ratchets the stop level
+        per the chosen discipline (one-way; never moves down). Quantity reduces as each TP fires;
+        when stop fires, all remaining TPs auto-cancel.
+    </p>
+
+    <div class="space-y-3 text-sm">
+        <div class="flex gap-3">
+            <span class="font-mono text-[11px] uppercase tracking-wider text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded h-5 shrink-0">BE stop</span>
+            <span><span class="font-medium">Entry, never moves.</span> Default. After each TP fires, qty reduces; level stays at entry. If price drops back to entry, residual exits at zero loss for that portion. <span class="text-stone-500">+$33/$1K OOS validated.</span></span>
+        </div>
+        <div class="flex gap-3">
+            <span class="font-mono text-[11px] uppercase tracking-wider text-stone-700 bg-stone-100 px-2 py-0.5 rounded h-5 shrink-0">Half-MFE</span>
+            <span><span class="font-medium">Trail at 50% of high once MFE ≥ entry × 1.5.</span> Below the trigger, behaves like BE. Above, ratchets up. Never below entry. <span class="text-stone-500">~+$2/$1K incremental over BE — overlaps mostly.</span></span>
+        </div>
+        <div class="flex gap-3">
+            <span class="font-mono text-[11px] uppercase tracking-wider text-stone-700 bg-stone-100 px-2 py-0.5 rounded h-5 shrink-0">Custom trail</span>
+            <span><span class="font-medium">User picks trigger MFE % and trail %.</span> Stop = MFE × trail %, activated once MFE ≥ entry × (1 + trigger). Same one-way ratchet, never below entry.</span>
+        </div>
+        <div class="flex gap-3">
+            <span class="font-mono text-[11px] uppercase tracking-wider text-amber-700 bg-amber-50 px-2 py-0.5 rounded h-5 shrink-0">None</span>
+            <span><span class="font-medium">No automated stop.</span> Position can ride to -100% on residual. Use sparingly — sized-for-zero swings only.</span>
+        </div>
+    </div>
+
+    <div class="text-[12px] text-stone-500 mt-4 pt-3 border-t border-stone-200 leading-relaxed">
+        Wired in <span class="mono">automation/orders.py:evaluate_position_orders()</span>
+        and <span class="mono">automation/rules.py:compute_stop_level()</span>. Of 235 historical trades
+        where the residual went bad, 234 touched entry first — which is why BE stop is the default.
+    </div>
+</div>
+
+<!-- Roll strike mechanics -->
+<div class="bg-stone-50 border border-stone-200 rounded-lg p-5 mb-8">
+    <div class="flex items-baseline justify-between mb-3">
+        <div class="text-[11px] uppercase tracking-wider text-stone-700 font-semibold">Roll strike mechanics</div>
+        <span class="text-[11px] text-stone-500">configurable in <span class="mono">rules.yaml · roll_strike_rules</span></span>
+    </div>
+
+    <p class="text-sm text-stone-600 mb-4 leading-relaxed">
+        When a roll fires (TP1/TP2/TP3 hit + roll plan triggered), the new position uses the next strike from the exited contract.
+    </p>
+
+    <div class="grid grid-cols-2 gap-4 text-sm mb-4">
+        <div class="bg-white border border-stone-200 rounded-md p-3">
+            <div class="text-[11px] uppercase tracking-wider text-emerald-700 font-semibold mb-1">Calls</div>
+            <div class="text-stone-700">Roll <span class="font-medium">UP</span> to the next strike above.</div>
+            <div class="text-[12px] text-stone-500 mt-2 mono">
+                NVDA 215C → 216C<br>
+                MU 600C → 601C<br>
+                SPX 7340C → 7345C
+            </div>
+        </div>
+        <div class="bg-white border border-stone-200 rounded-md p-3">
+            <div class="text-[11px] uppercase tracking-wider text-red-700 font-semibold mb-1">Puts</div>
+            <div class="text-stone-700">Roll <span class="font-medium">DOWN</span> to the next strike below.</div>
+            <div class="text-[12px] text-stone-500 mt-2 mono">
+                AAPL 290P → 289P<br>
+                NVDA 200P → 199P<br>
+                SPX 7300P → 7295P
+            </div>
+        </div>
+    </div>
+
+    <div class="text-[12px] text-stone-500 leading-relaxed">
+        Strike interval: <span class="mono">$5</span> for SPX; <span class="mono">$1</span> for everything else.
+        Offsets default to <span class="mono">1</span> (one strike) — bump <span class="mono">call_offset_strikes</span>
+        or <span class="mono">put_offset_strikes</span> in <span class="mono">rules.yaml</span> to roll further OTM.
+        Wired in <span class="mono">automation/rules.py:roll_next_strike()</span>.
+    </div>
+</div>
+
+{% if error %}
+<div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4 text-sm text-red-900">
+    <span class="font-medium">Error:</span> {{ error }}
+</div>
+{% endif %}
+
+<div class="grid grid-cols-3 gap-6 mb-8">
+
+    <!-- TP ladder summary -->
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">TP ladder by DTE</div>
+        <table class="w-full text-sm">
+            <thead class="text-[11px] text-stone-500">
+                <tr>
+                    <th class="text-left pb-2 font-medium">Bucket</th>
+                    <th class="text-right pb-2 font-medium">TP1</th>
+                    <th class="text-right pb-2 font-medium">TP2</th>
+                    <th class="text-right pb-2 font-medium">TP3</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+            {% for bucket, vals in rules.tp_ladder_by_dte.items() %}
+                <tr>
+                    <td class="py-2 text-stone-600">{{ bucket }} DTE</td>
+                    <td class="py-2 text-right mono">+{{ "%.0f"|format(vals.tp1_pct * 100) }}%</td>
+                    <td class="py-2 text-right mono">+{{ "%.0f"|format(vals.tp2_pct * 100) }}%</td>
+                    <td class="py-2 text-right mono">+{{ "%.0f"|format(vals.tp3_pct * 100) }}%</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <div class="text-[11px] text-stone-400 mt-3">data-derived, n=384</div>
+    </div>
+
+    <!-- Regime multipliers -->
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Regime multipliers</div>
+        <table class="w-full text-sm">
+            <thead class="text-[11px] text-stone-500">
+                <tr>
+                    <th class="text-left pb-2 font-medium">Regime</th>
+                    <th class="text-right pb-2 font-medium">TP ×</th>
+                    <th class="text-right pb-2 font-medium">Stop ×</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+            {% for r, m in rules.regime_multipliers.items() %}
+                <tr>
+                    <td class="py-2 text-stone-700">{{ r }}</td>
+                    <td class="py-2 text-right mono">{{ "%.2f"|format(m.tp_mult) }}</td>
+                    <td class="py-2 text-right mono">{{ "%.2f"|format(m.stop_mult) }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <div class="text-[11px] text-stone-400 mt-3">data-derived</div>
+    </div>
+
+    <!-- Caps -->
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Caps & gates</div>
+        <div class="text-sm space-y-2">
+            <div class="flex justify-between">
+                <span class="text-stone-600">Daily count (default)</span>
+                <span class="mono">{{ rules.daily_caps.count_based.default }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-stone-600">Daily count (HOT)</span>
+                <span class="mono">{{ rules.daily_caps.count_based.hot }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-stone-600">Daily loss cap</span>
+                <span class="mono">${{ rules.daily_caps.loss_cap_dollars }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-stone-600">Sector warn</span>
+                <span class="mono">≥ {{ rules.sector_caps.warn_at }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-stone-600">Sector reject</span>
+                <span class="mono">≥ {{ rules.sector_caps.reject_at }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-stone-600">Index strikes OTM</span>
+                <span class="mono">≤ {{ rules.index_strike_rule.max_otm_strikes }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Familiar tickers -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-8">
+    <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Familiar tickers</div>
+    <div class="flex flex-wrap gap-1.5">
+        {% for t in rules.familiar_tickers %}
+        <span class="inline-block px-2 py-0.5 rounded bg-stone-100 text-stone-700 text-[12px] mono">{{ t }}</span>
+        {% endfor %}
+    </div>
+    <div class="text-[11px] text-stone-400 mt-3">data-derived · others trigger WATCH-ONLY rejection</div>
+</div>
+
+<!-- Raw editor -->
+<div class="bg-white border border-stone-200 rounded-lg p-5">
+    <div class="flex items-baseline justify-between mb-3">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Edit rules.yaml</div>
+        <div class="text-[11px] text-stone-400">Validated server-side. Engine reloads on save.</div>
+    </div>
+    <form method="post" action="/rules">
+        <textarea name="rules_yaml" rows="22"
+                  class="w-full mono text-[12px] px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 leading-relaxed">{{ rules_yaml }}</textarea>
+        <div class="flex items-center gap-3 mt-3">
+            <button type="submit" class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-md text-sm font-medium transition-colors">Save & reload</button>
+            <a href="/rules" class="text-sm text-stone-500 hover:text-stone-900">Discard</a>
+        </div>
+    </form>
+</div>
+
+{% endblock %}

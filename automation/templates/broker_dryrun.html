@@ -1,0 +1,392 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_settings_tabs.html" %}
+
+<div class="flex items-baseline justify-between mb-4">
+    <h2 class="text-[15px] font-semibold text-stone-700">Dry-run order (whatIf)</h2>
+    <a href="/settings/broker" class="text-[12px] text-stone-500 hover:text-stone-900">← back to broker status</a>
+</div>
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-2xl">
+    Validates contract resolution + order construction against your real IBKR account using
+    <span class="mono">whatIfOrderAsync</span>. <span class="font-medium">No order leaves the gateway</span> — IBKR
+    returns the simulated margin and commission impact only. Use this to verify the system can
+    correctly identify the contracts you'd trade before any real placement code is wired.
+</p>
+
+{% if not broker.connected or broker.backend != 'ibkr' %}
+<div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 max-w-3xl text-sm text-amber-900 leading-relaxed">
+    <span class="font-medium">Broker not connected to IBKR.</span>
+    Status: <span class="mono">{{ broker.backend }}</span> · {{ "connected" if broker.connected else "disconnected" }}.
+    Set <span class="mono">BROKER=ibkr_live</span> (or <span class="mono">ibkr_paper</span>) and restart the server first.
+</div>
+{% endif %}
+
+<!-- Form -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6 max-w-2xl">
+    <form method="post" action="/settings/broker/dryrun" class="space-y-4" x-data="{type: 'MKT'}">
+        <div class="grid grid-cols-12 gap-2 items-center">
+            <span class="col-span-3 text-[11px] uppercase tracking-wider text-stone-500">Contract</span>
+            <input type="text" name="ticker" required placeholder="NVDA"
+                   value="{{ submitted.ticker if submitted else 'NVDA' }}"
+                   class="col-span-3 mono uppercase px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+            <input type="date" name="expiry" required
+                   value="{{ submitted.expiry if submitted else default_expiry }}"
+                   class="col-span-3 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+            <input type="number" step="0.5" name="strike" required placeholder="215"
+                   value="{{ submitted.strike if submitted else '' }}"
+                   class="col-span-3 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        </div>
+        <div class="grid grid-cols-12 gap-2 items-center">
+            <span class="col-span-3 text-[11px] uppercase tracking-wider text-stone-500">Right · qty</span>
+            <select name="right" class="col-span-3 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <option value="C" {% if submitted and submitted.right == 'C' %}selected{% endif %}>Call</option>
+                <option value="P" {% if submitted and submitted.right == 'P' %}selected{% endif %}>Put</option>
+            </select>
+            <input type="number" name="contracts" required min="1"
+                   value="{{ submitted.contracts if submitted else 1 }}"
+                   class="col-span-2 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        </div>
+        <div class="grid grid-cols-12 gap-2 items-center">
+            <span class="col-span-3 text-[11px] uppercase tracking-wider text-stone-500">Order</span>
+            <select name="order_type" x-model="type" class="col-span-3 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <option value="MKT" {% if submitted and submitted.order_type == 'MKT' %}selected{% endif %}>Market</option>
+                <option value="LMT" {% if submitted and submitted.order_type == 'LMT' %}selected{% endif %}>Limit</option>
+            </select>
+            <input type="number" step="0.01" name="limit_price" placeholder="3.50"
+                   :disabled="type === 'MKT'"
+                   value="{{ submitted.limit_price if submitted else '' }}"
+                   class="col-span-3 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:bg-stone-100 disabled:text-stone-400">
+        </div>
+        <!-- TP ladder dry-run option -->
+        <div class="pt-3 border-t border-stone-100" x-data="{showTp: {% if submitted and submitted.test_tp_ladder %}true{% else %}false{% endif %}}">
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" name="test_tp_ladder" value="1" x-model="showTp"
+                       {% if submitted and submitted.test_tp_ladder %}checked{% endif %}
+                       class="rounded border-stone-300 text-emerald-600 focus:ring-emerald-500">
+                <span class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Also dry-run TP ladder (SELL orders)</span>
+            </label>
+
+            <div x-show="showTp" class="mt-3 ml-6 space-y-2">
+                <div class="grid grid-cols-12 gap-2 items-center">
+                    <span class="col-span-3 text-[11px] uppercase tracking-wider text-stone-500">Preset</span>
+                    <select name="tp_preset" class="col-span-4 px-3 py-1.5 border border-stone-300 rounded-md text-[12px] focus:outline-none focus:border-emerald-500">
+                        <option value="auto">Auto · DTE-aware</option>
+                        <option value="intraday">Intraday · 2-4 DTE</option>
+                        <option value="swing">Swing · 5-9 DTE</option>
+                        <option value="fixed_45_60_90" {% if submitted and submitted.tp_preset == 'fixed_45_60_90' %}selected{% endif %}>Fixed +45/+60/+90 · +45/+60/+90</option>
+                    </select>
+                    <select name="tp_split" class="col-span-4 px-3 py-1.5 border border-stone-300 rounded-md text-[12px] focus:outline-none focus:border-emerald-500">
+                        <option value="100" {% if submitted and submitted.tp_split == '100' %}selected{% endif %}>Split · 100</option>
+                        <option value="50_50" {% if submitted and submitted.tp_split == '50_50' %}selected{% endif %}>Split · 50/50</option>
+                        <option value="50_25_25" {% if not submitted or submitted.tp_split == '50_25_25' %}selected{% endif %}>Split · 50/25/25</option>
+                        <option value="33_33_34" {% if submitted and submitted.tp_split == '33_33_34' %}selected{% endif %}>Split · 33/33/34</option>
+                    </select>
+                </div>
+                <div class="text-[11px] text-stone-500 leading-relaxed">
+                    Requires Limit order with a price (used as anchor for TP1/TP2/TP3 = entry × (1+TP%)).
+                    Each TP becomes a SELL LimitOrder GTC; whatIfOrderAsync runs against each.
+                </div>
+
+                <div class="grid grid-cols-12 gap-2 items-center mt-2">
+                    <span class="col-span-3 text-[11px] uppercase tracking-wider text-stone-500">Initial stop %</span>
+                    <input type="number" step="0.5" name="stop_initial_pct"
+                           value="{{ submitted.stop_initial_pct if submitted and submitted.stop_initial_pct else '0' }}"
+                           placeholder="0 = at entry, -25 = 25% below"
+                           class="col-span-4 mono px-3 py-1.5 border border-stone-300 rounded-md text-[12px] focus:outline-none focus:border-emerald-500">
+                    <span class="col-span-5 text-[11px] text-stone-500">% from entry. Stop price = entry × (1 + this/100). SELL StopOrder GTC, full qty.</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="pt-2 flex items-center gap-3">
+            <button type="submit" class="bg-stone-900 hover:bg-stone-700 text-white px-5 py-2 rounded-md text-sm font-medium">
+                Run dry-run
+            </button>
+            <span class="text-[11px] text-stone-500">
+                Calls <span class="mono">whatIfOrderAsync</span> on IBKR — no order is placed.
+            </span>
+        </div>
+    </form>
+</div>
+
+<!-- Result -->
+{% if result %}
+<div class="max-w-3xl">
+
+    {% if result.status == 'error' %}
+    <div class="bg-red-50 border border-red-200 rounded-lg p-5 mb-4">
+        <div class="flex items-center gap-2 mb-1">
+            <div class="w-2 h-2 rounded-full bg-red-500"></div>
+            <span class="text-red-700 text-sm font-medium">Failed</span>
+        </div>
+        <div class="text-[13px] text-red-900 mono leading-relaxed mt-2">{{ result.error }}</div>
+        {% if result.contract_attempted %}
+        <div class="mt-3 pt-3 border-t border-red-200">
+            <div class="text-[11px] uppercase tracking-wider text-red-700 font-medium mb-1.5">Contract attempted</div>
+            <pre class="text-[11px] mono text-stone-700 whitespace-pre-wrap">{{ result.contract_attempted | tojson(indent=2) }}</pre>
+        </div>
+        {% endif %}
+    </div>
+    {% elif result.status == 'dry_run_ok' %}
+
+    <div class="bg-emerald-50 border border-emerald-200 rounded-lg p-3 mb-4">
+        <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-emerald-500"></div>
+            <span class="text-emerald-700 text-sm font-medium">Dry-run OK · whatIf returned successfully</span>
+        </div>
+        <div class="text-[12px] text-emerald-700 mt-1">No order was placed.</div>
+    </div>
+
+    <!-- Resolved contract -->
+    <div class="bg-white border border-stone-200 rounded-lg p-5 mb-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Resolved contract</div>
+        <div class="grid grid-cols-2 gap-y-2 gap-x-8 text-sm">
+            <div><span class="text-stone-500">conId:</span> <span class="mono font-medium">{{ result.contract.conId }}</span></div>
+            <div><span class="text-stone-500">localSymbol:</span> <span class="mono">{{ result.contract.localSymbol }}</span></div>
+            <div><span class="text-stone-500">symbol:</span> <span class="mono">{{ result.contract.symbol }}</span></div>
+            <div><span class="text-stone-500">secType:</span> <span class="mono">{{ result.contract.secType }}</span></div>
+            <div><span class="text-stone-500">expiry:</span> <span class="mono">{{ result.contract.expiry }}</span></div>
+            <div><span class="text-stone-500">strike:</span> <span class="mono">{{ result.contract.strike }}</span></div>
+            <div><span class="text-stone-500">right:</span> <span class="mono">{{ result.contract.right }}</span></div>
+            <div><span class="text-stone-500">multiplier:</span> <span class="mono">{{ result.contract.multiplier }}</span></div>
+            <div><span class="text-stone-500">exchange:</span> <span class="mono">{{ result.contract.exchange }}</span></div>
+            <div><span class="text-stone-500">tradingClass:</span> <span class="mono">{{ result.contract.tradingClass }}</span></div>
+        </div>
+        <div class="text-[11px] text-stone-500 mt-3 pt-3 border-t border-stone-100">
+            <span class="font-medium">conId</span> is IBKR's permanent contract identifier — same across sessions.
+            That this resolved means IBKR found this exact strike + expiry in the chain.
+        </div>
+    </div>
+
+    <!-- Order spec -->
+    <div class="bg-white border border-stone-200 rounded-lg p-5 mb-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Order construction</div>
+        <div class="grid grid-cols-2 gap-y-2 gap-x-8 text-sm">
+            <div><span class="text-stone-500">action:</span> <span class="mono font-medium">{{ result.order.action }}</span></div>
+            <div><span class="text-stone-500">qty:</span> <span class="mono">{{ result.order.totalQuantity }}</span></div>
+            <div><span class="text-stone-500">orderType:</span> <span class="mono">{{ result.order.orderType }}</span></div>
+            {% if result.order.lmtPrice is not none %}
+            <div><span class="text-stone-500">lmtPrice:</span> <span class="mono">${{ "%.2f"|format(result.order.lmtPrice) }}</span></div>
+            {% endif %}
+            <div><span class="text-stone-500">tif:</span> <span class="mono">{{ result.order.tif or "DAY" }}</span></div>
+            <div><span class="text-stone-500">whatIf:</span> <span class="mono text-emerald-700">{{ result.order.whatIf }}</span></div>
+        </div>
+    </div>
+
+    <!-- WhatIf simulation -->
+    {% set wf = result.whatif %}
+    {% set has_any = wf.init_margin_change is not none or wf.maint_margin_change is not none or wf.equity_with_loan_change is not none or wf.commission is not none or wf.min_commission is not none %}
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Simulated impact</div>
+        <div class="grid grid-cols-2 gap-3">
+            <div class="border border-stone-100 rounded-md p-3">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500">Initial margin Δ</div>
+                <div class="mono text-lg mt-1">
+                    {% if wf.init_margin_change is not none %}${{ "%.2f"|format(wf.init_margin_change) }}{% else %}<span class="text-stone-400">—</span>{% endif %}
+                </div>
+            </div>
+            <div class="border border-stone-100 rounded-md p-3">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500">Maint margin Δ</div>
+                <div class="mono text-lg mt-1">
+                    {% if wf.maint_margin_change is not none %}${{ "%.2f"|format(wf.maint_margin_change) }}{% else %}<span class="text-stone-400">—</span>{% endif %}
+                </div>
+            </div>
+            <div class="border border-stone-100 rounded-md p-3">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500">Equity w/ loan Δ</div>
+                <div class="mono text-lg mt-1">
+                    {% if wf.equity_with_loan_change is not none %}${{ "%.2f"|format(wf.equity_with_loan_change) }}{% else %}<span class="text-stone-400">—</span>{% endif %}
+                </div>
+            </div>
+            <div class="border border-stone-100 rounded-md p-3">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500">Commission</div>
+                <div class="mono text-lg mt-1">
+                    {% if wf.commission is not none %}
+                    ${{ "%.2f"|format(wf.commission) }} {{ wf.commission_currency }}
+                    {% elif wf.min_commission is not none %}
+                    ${{ "%.2f"|format(wf.min_commission) }} – ${{ "%.2f"|format(wf.max_commission) }}
+                    {% else %}<span class="text-stone-400">—</span>{% endif %}
+                </div>
+            </div>
+        </div>
+
+        {% if not has_any %}
+        <div class="mt-4 pt-3 border-t border-stone-100 text-[12px] text-amber-800 bg-amber-50 rounded-md p-3 leading-relaxed">
+            <span class="font-medium">All values came back empty.</span>
+            IBKR's whatIf for options often returns empty when there's no live market quote for the contract. Try:
+            <ul class="mt-1.5 ml-4 list-disc space-y-0.5">
+                <li>Use a <span class="mono">Limit</span> order with a real price (e.g. an option's mid bid-ask)</li>
+                <li>Pick a more liquid strike — far-OTM strikes often have no quote outside market hours</li>
+                <li>Run during market hours (09:30–16:00 ET) when option chains have streaming quotes</li>
+            </ul>
+            Empty values don't mean the dry-run failed — contract resolution above already validated the core path.
+        </div>
+        {% endif %}
+
+        {% if wf.warning_text %}
+        <div class="mt-3 pt-3 border-t border-stone-100 text-[12px] text-amber-700">
+            <span class="font-medium">Warning:</span> {{ wf.warning_text }}
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- TP ladder dry-run results -->
+    {% if tp_results and tp_meta %}
+    <div class="bg-white border border-stone-200 rounded-lg p-5 mt-6">
+        <div class="flex items-baseline justify-between mb-3">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">TP ladder dry-run (SELL orders)</div>
+            <span class="text-[11px] text-stone-500">{{ tp_meta.ladder_label }} · split {{ tp_meta.split }}</span>
+        </div>
+
+        <p class="text-[12px] text-stone-600 mb-4 leading-relaxed">
+            Anchor price (entry): <span class="mono font-medium">${{ "%.2f"|format(tp_meta.entry_price) }}</span> ·
+            DTE: <span class="mono">{{ tp_meta.dte }}</span> ·
+            Each tier is a separate SELL LimitOrder GTC against the same conId.
+        </p>
+
+        <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="text-stone-500 text-[11px] uppercase tracking-wider">
+                <tr class="border-b border-stone-200">
+                    <th class="text-left py-2 font-medium">Tier</th>
+                    <th class="text-right py-2 font-medium">Target</th>
+                    <th class="text-right py-2 font-medium">Qty</th>
+                    <th class="text-right py-2 font-medium">ROI %</th>
+                    <th class="text-right py-2 font-medium">Commission</th>
+                    <th class="text-right py-2 font-medium">Margin Δ</th>
+                    <th class="text-left py-2 font-medium pl-3">Status</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for tp in tp_results %}
+                <tr>
+                    <td class="py-2.5">
+                        <span class="mono font-semibold text-emerald-700 text-[12px]">TP{{ tp.tier }}</span>
+                    </td>
+                    <td class="py-2.5 text-right mono">${{ "%.2f"|format(tp.price) if tp.price else "—" }}</td>
+                    <td class="py-2.5 text-right mono">{{ tp.qty if tp.qty else "—" }}</td>
+                    <td class="py-2.5 text-right mono text-stone-600">
+                        {% if tp_meta.entry_price and tp.price %}+{{ "%.0f"|format((tp.price / tp_meta.entry_price - 1) * 100) }}%{% else %}—{% endif %}
+                    </td>
+                    <td class="py-2.5 text-right mono">
+                        {% if tp.whatif and tp.whatif.commission is not none %}
+                        ${{ "%.2f"|format(tp.whatif.commission) }}
+                        {% elif tp.whatif and tp.whatif.min_commission is not none %}
+                        ${{ "%.2f"|format(tp.whatif.min_commission) }}–${{ "%.2f"|format(tp.whatif.max_commission) }}
+                        {% else %}<span class="text-stone-400">—</span>{% endif %}
+                    </td>
+                    <td class="py-2.5 text-right mono">
+                        {% if tp.whatif and tp.whatif.init_margin_change is not none %}
+                        ${{ "%.2f"|format(tp.whatif.init_margin_change) }}
+                        {% else %}<span class="text-stone-400">—</span>{% endif %}
+                    </td>
+                    <td class="py-2.5 pl-3">
+                        {% if tp.status == 'ok' %}
+                        <span class="inline-block px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider bg-emerald-50 text-emerald-700">✓ resolved</span>
+                        {% elif tp.status == 'skipped' %}
+                        <span class="inline-block px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider bg-stone-100 text-stone-600">skipped</span>
+                        {% else %}
+                        <span class="inline-block px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider bg-red-50 text-red-700">error</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% if tp.status == 'error' and tp.error %}
+                <tr><td colspan="7" class="py-1 text-[11px] text-red-700 mono pl-8">{{ tp.error }}</td></tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+            <tfoot class="text-[11px] text-stone-500">
+                <tr class="border-t border-stone-200">
+                    {% set ok_tps = tp_results | selectattr('status', 'equalto', 'ok') | list %}
+                    {% set total_qty = ok_tps | sum(attribute='qty') %}
+                    {% set total_comm = 0 %}
+                    {% for tp in ok_tps %}{% if tp.whatif.commission is not none %}{% set total_comm = total_comm + tp.whatif.commission %}{% endif %}{% endfor %}
+                    <td class="pt-2 uppercase tracking-wider font-medium">Round-trip</td>
+                    <td class="pt-2"></td>
+                    <td class="pt-2 text-right mono">{{ total_qty }}</td>
+                    <td class="pt-2"></td>
+                    <td class="pt-2 text-right mono">${{ "%.2f"|format(total_comm) }} sells{% if result.whatif and result.whatif.commission is not none %} + ${{ "%.2f"|format(result.whatif.commission) }} buy = <span class="font-medium">${{ "%.2f"|format(total_comm + result.whatif.commission) }}</span>{% endif %}</td>
+                    <td colspan="2"></td>
+                </tr>
+            </tfoot>
+        </table>
+        </div>
+
+        <div class="text-[11px] text-stone-500 mt-3 pt-3 border-t border-stone-100 leading-relaxed">
+            ✓ resolved means IBKR accepted the contract + order spec. If commission/margin show "—",
+            same caveats as the entry whatIf — usually after-hours or no streaming quote.
+            Total round-trip commission is the realistic per-trade overhead estimate.
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Stop dry-run results -->
+    {% if stop_result and stop_meta %}
+    <div class="bg-white border border-stone-200 rounded-lg p-5 mt-6">
+        <div class="flex items-baseline justify-between mb-3">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Stop dry-run (SELL StopOrder)</div>
+            <span class="text-[11px] text-stone-500">
+                stop {{ "%+.1f"|format(stop_meta.stop_initial_pct) }}% from entry · GTC · full qty
+            </span>
+        </div>
+
+        <p class="text-[12px] text-stone-600 mb-4 leading-relaxed">
+            Entry anchor: <span class="mono font-medium">${{ "%.2f"|format(stop_meta.entry_price) }}</span> ·
+            Stop trigger: <span class="mono font-medium">${{ "%.2f"|format(stop_meta.stop_price) }}</span> ·
+            Qty: <span class="mono">{{ stop_meta.qty }}</span> ·
+            One SELL StopOrder GTC — fires when option price ≤ stop trigger.
+        </p>
+
+        {% if stop_result.status == 'ok' %}
+        <div class="grid grid-cols-2 gap-y-2 gap-x-8 text-sm mb-3">
+            <div><span class="text-stone-500">action:</span> <span class="mono font-medium">{{ stop_result.order.action }}</span></div>
+            <div><span class="text-stone-500">qty:</span> <span class="mono">{{ stop_result.order.totalQuantity }}</span></div>
+            <div><span class="text-stone-500">orderType:</span> <span class="mono">{{ stop_result.order.orderType }}</span></div>
+            <div><span class="text-stone-500">tif:</span> <span class="mono">{{ stop_result.order.tif }}</span></div>
+            <div><span class="text-stone-500">stop trigger:</span> <span class="mono">${{ "%.2f"|format(stop_result.stop_price) }}</span></div>
+            <div><span class="text-stone-500">whatIf:</span> <span class="mono text-emerald-700">{{ stop_result.order.whatIf }}</span></div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 mt-3 pt-3 border-t border-stone-100">
+            {% set wf = stop_result.whatif %}
+            <div class="border border-stone-100 rounded-md p-3">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500">Initial margin Δ</div>
+                <div class="mono text-lg mt-1">
+                    {% if wf.init_margin_change is not none %}${{ "%.2f"|format(wf.init_margin_change) }}{% else %}<span class="text-stone-400">—</span>{% endif %}
+                </div>
+            </div>
+            <div class="border border-stone-100 rounded-md p-3">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500">Commission</div>
+                <div class="mono text-lg mt-1">
+                    {% if wf.commission is not none %}${{ "%.2f"|format(wf.commission) }} {{ wf.commission_currency }}
+                    {% elif wf.min_commission is not none %}${{ "%.2f"|format(wf.min_commission) }}–${{ "%.2f"|format(wf.max_commission) }}
+                    {% else %}<span class="text-stone-400">—</span>{% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-3">
+            <span class="inline-block px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider bg-emerald-50 text-emerald-700">✓ stop order resolved</span>
+        </div>
+        {% elif stop_result.status == 'skipped' %}
+        <div class="text-[12px] text-stone-500 italic">Skipped: {{ stop_result.reason }}</div>
+        {% else %}
+        <div class="bg-red-50 border border-red-200 rounded-md p-3 text-[12px] text-red-900">
+            <span class="font-medium">Stop dry-run failed:</span> {{ stop_result.error }}
+        </div>
+        {% endif %}
+
+        <div class="text-[11px] text-stone-500 mt-3 pt-3 border-t border-stone-100 leading-relaxed">
+            Validates the SELL StopOrder construction (different order type from LimitOrder used by TPs).
+            In live execution, the engine modifies this order's qty and trigger price as TPs fire and phase-stops ratchet up — that's
+            <span class="mono">modifyOrder</span> not place; can be tested separately when needed.
+        </div>
+    </div>
+    {% endif %}
+    {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

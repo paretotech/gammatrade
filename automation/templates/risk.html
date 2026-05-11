@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+
+{% macro enforcement_select(name, value) %}
+<label class="inline-flex items-center gap-2 text-[11px]">
+    <span class="uppercase tracking-wider text-stone-500">When breached</span>
+    <select name="{{ name }}"
+            class="mono px-2 py-1 border border-stone-300 rounded text-[11px] focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500
+                   {% if value == 'decline' %}bg-red-50 text-red-800 border-red-200{% else %}bg-amber-50 text-amber-800 border-amber-200{% endif %}">
+        <option value="caution" {% if value == 'caution' %}selected{% endif %}>⚠ caution (warn, allow)</option>
+        <option value="decline" {% if value == 'decline' %}selected{% endif %}>⛔ decline (block)</option>
+    </select>
+</label>
+{% endmacro %}
+
+{% block content %}
+
+{% include "_settings_tabs.html" %}
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-2xl">
+    Daily exposure caps, regime-aware trade limits, and blackout windows. Each
+    section has its own <span class="font-medium">enforcement mode</span> —
+    <span class="text-amber-700 font-medium">caution</span> warns and lets the trade through,
+    <span class="text-red-700 font-medium">decline</span> blocks it.
+    Save persists to <span class="mono">rules.yaml</span> and reloads the engine.
+</p>
+
+{% if saved %}
+<div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-lg p-3 mb-4">
+    ✓ Risk limits saved.
+</div>
+{% endif %}
+{% if error %}
+<div class="bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg p-3 mb-4 mono">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="/settings/risk" class="space-y-6 max-w-3xl">
+
+    <!-- Daily $ loss + kill -->
+    <section class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3 gap-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Daily loss & kill switch</h2>
+            <div class="flex items-center gap-3">
+                {{ enforcement_select('loss_enforcement', daily.loss_enforcement) }}
+                <span class="text-[11px] text-stone-500">data-derived</span>
+            </div>
+        </div>
+        <p class="text-[11px] text-stone-500 mb-3">Auto-kill is always hard — once N losers fire, the kill switch flips on regardless of mode.</p>
+
+        <div class="grid grid-cols-2 gap-4">
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Max daily loss ($)</span>
+                <input type="number" step="50" min="0" name="loss_cap_dollars" required
+                       value="{{ daily.loss_cap_dollars }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Block new entries once aggregate realized + open mark-to-market loss reaches this.</span>
+            </label>
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Auto-kill after N losses</span>
+                <input type="number" step="1" min="0" name="kill_after_losses" required
+                       value="{{ daily.kill_after_losses }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Same-day kill switch fires after this many closed losers. <span class="mono">0</span> = disabled.</span>
+            </label>
+        </div>
+    </section>
+
+    <!-- Per-regime trade caps -->
+    <section class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3 gap-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Max new entries / day by regime</h2>
+            <div class="flex items-center gap-3">
+                {{ enforcement_select('count_enforcement', daily.count_enforcement) }}
+                <span class="text-[11px] text-stone-500">data-derived</span>
+            </div>
+        </div>
+
+        <p class="text-sm text-stone-600 mb-3 leading-relaxed">
+            Default 1/day except in confirmed HOT (4w median ROI &gt; +25%). Profitable rolls
+            (close at &gt;+20% ROI → continuation entry, same ticker, higher strike) don't count.
+        </p>
+
+        <div class="grid grid-cols-5 gap-3">
+            {% for regime, cls in [('hot', 'amber'), ('warm', 'amber'), ('normal', 'emerald'), ('trap', 'stone'), ('cold', 'stone')] %}
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-{{ cls }}-700 mb-1 font-semibold">{{ regime.upper() }}</span>
+                <input type="number" step="1" min="0" max="20" name="cap_{{ regime }}" required
+                       value="{{ count_based.get(regime, count_based.get('default', 1)) }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm text-center focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+            </label>
+            {% endfor %}
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 mt-4 pt-4 border-t border-stone-100">
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Default fallback</span>
+                <input type="number" step="1" min="0" max="20" name="cap_default" required
+                       value="{{ count_based.get('default', 1) }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Used when regime tag is missing.</span>
+            </label>
+        </div>
+    </section>
+
+    <!-- Sizing -->
+    <section class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3 gap-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Position sizing</h2>
+            <div class="flex items-center gap-3">
+                {{ enforcement_select('size_enforcement', risk.size_enforcement) }}
+                <span class="text-[11px] text-stone-500">size cap · max open · DTE</span>
+            </div>
+        </div>
+        <p class="text-[11px] text-stone-500 mb-3">Applies to per-trade $ cap, max open positions, and DTE bounds.</p>
+
+        <div class="grid grid-cols-3 gap-4">
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Normal entry size ($)</span>
+                <input type="number" step="100" min="0" name="normal_entry_dollars" required
+                       value="{{ risk.normal_entry_dollars }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Default capital per entry — sized for zero.</span>
+            </label>
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Per-trade max ($)</span>
+                <input type="number" step="100" min="0" name="per_trade_max_dollars" required
+                       value="{{ risk.per_trade_max_dollars }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Hard ceiling. Block entries above.</span>
+            </label>
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Max open positions</span>
+                <input type="number" step="1" min="1" max="20" name="max_open_positions" required
+                       value="{{ risk.max_open_positions }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Block new entry beyond this count.</span>
+            </label>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-stone-100">
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Min DTE</span>
+                <input type="number" step="1" min="0" max="60" name="min_dte" required
+                       value="{{ risk.min_dte }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+            </label>
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Max DTE</span>
+                <input type="number" step="1" min="0" max="365" name="max_dte" required
+                       value="{{ risk.max_dte }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+            </label>
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Stop warmup (sec)</span>
+                <input type="number" step="5" min="0" max="600" name="entry_warmup_seconds" required
+                       value="{{ risk.entry_warmup_seconds }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Stop placed but won't fire for N seconds after entry fill — protects against open-spread slippage. <span class="mono">0</span> disables.</span>
+            </label>
+        </div>
+    </section>
+
+    <!-- Sector concentration -->
+    <section class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Sector concentration</h2>
+            <span class="text-[11px] text-stone-500">data-derived</span>
+        </div>
+        <p class="text-[11px] text-stone-500 mb-3">Two-tier: warn surfaces a yellow flag; reject blocks the entry. Enforcement is built into the thresholds — no separate mode needed.</p>
+
+        <div class="grid grid-cols-2 gap-4">
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-amber-700 mb-1 font-semibold">⚠ Warn at N same-sector</span>
+                <input type="number" step="1" min="1" max="10" name="sector_warn" required
+                       value="{{ sector.warn_at }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Surface a yellow flag at this count.</span>
+            </label>
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-red-700 mb-1 font-semibold">⛔ Hard reject at N</span>
+                <input type="number" step="1" min="1" max="10" name="sector_reject" required
+                       value="{{ sector.reject_at }}"
+                       class="mono w-full px-3 py-2 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <span class="block text-[11px] text-stone-500 mt-1">Block new same-sector entries beyond this count.</span>
+            </label>
+        </div>
+    </section>
+
+    <!-- Blackout windows -->
+    <section class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Blackout windows</h2>
+            <span class="text-[11px] text-stone-500">data-derived</span>
+        </div>
+
+        <div class="space-y-3">
+            <div class="flex items-start gap-3 pb-3 border-b border-stone-100">
+                <label class="flex items-start gap-3 cursor-pointer flex-1">
+                    <input type="checkbox" name="blackout_pre_fomc" value="1"
+                           {% if blackouts.pre_fomc.enabled %}checked{% endif %}
+                           class="mt-1 w-4 h-4 text-emerald-600 border-stone-300 rounded focus:ring-emerald-500">
+                    <span class="text-sm">
+                        <span class="font-medium">Pre-FOMC blackout</span>
+                        <span class="block text-[11px] text-stone-500 mt-0.5">Tuesday 09:30 ET → Wednesday 14:30 ET of FOMC week.</span>
+                    </span>
+                </label>
+                {{ enforcement_select('blackout_pre_fomc_enforcement', blackouts.pre_fomc.enforcement) }}
+            </div>
+            <div class="flex items-start gap-3 pb-3 border-b border-stone-100">
+                <label class="flex items-start gap-3 cursor-pointer flex-1">
+                    <input type="checkbox" name="blackout_cpi_day" value="1"
+                           {% if blackouts.cpi_day.enabled %}checked{% endif %}
+                           class="mt-1 w-4 h-4 text-emerald-600 border-stone-300 rounded focus:ring-emerald-500">
+                    <span class="text-sm">
+                        <span class="font-medium">CPI print day</span>
+                        <span class="block text-[11px] text-stone-500 mt-0.5">Day of a CPI release. Pre/post-CPI fine.</span>
+                    </span>
+                </label>
+                {{ enforcement_select('blackout_cpi_day_enforcement', blackouts.cpi_day.enforcement) }}
+            </div>
+            <div class="flex items-start gap-3">
+                <label class="flex items-start gap-3 cursor-pointer flex-1">
+                    <input type="checkbox" name="blackout_megacap_earnings" value="1"
+                           {% if blackouts.pre_megacap_earnings.enabled %}checked{% endif %}
+                           class="mt-1 w-4 h-4 text-emerald-600 border-stone-300 rounded focus:ring-emerald-500">
+                    <span class="text-sm">
+                        <span class="font-medium">Pre-megacap-earnings (same-ticker only)</span>
+                        <span class="block text-[11px] text-stone-500 mt-0.5">Megacap with earnings inside DTE window.</span>
+                    </span>
+                </label>
+                {{ enforcement_select('blackout_megacap_earnings_enforcement', blackouts.pre_megacap_earnings.enforcement) }}
+            </div>
+        </div>
+    </section>
+
+    <!-- Event calendar -->
+    <section class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Event calendar</h2>
+            <span class="text-[11px] text-stone-500">drives blackout detection</span>
+        </div>
+        <p class="text-sm text-stone-600 mb-4 leading-relaxed">
+            Dates that the FOMC / CPI / megacap-earnings gates check against.
+            Verify these against fed.gov / bls.gov when new schedules are
+            announced. One date per line (<span class="mono">YYYY-MM-DD</span>).
+            For earnings, use <span class="mono">TICKER: YYYY-MM-DD</span>.
+        </p>
+
+        <div class="grid grid-cols-2 gap-4">
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">FOMC meeting Wednesdays</span>
+                <textarea name="fomc_meetings" rows="8"
+                          class="mono w-full px-3 py-2 border border-stone-300 rounded text-[12px] focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                          spellcheck="false">{{ fomc_text }}</textarea>
+                <span class="block text-[11px] text-stone-500 mt-1">Date listed = statement-release Wednesday. Blackout covers Tue + Wed.</span>
+            </label>
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">CPI release dates</span>
+                <textarea name="cpi_releases" rows="8"
+                          class="mono w-full px-3 py-2 border border-stone-300 rounded text-[12px] focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                          spellcheck="false">{{ cpi_text }}</textarea>
+                <span class="block text-[11px] text-stone-500 mt-1">Day-of only. Pre/post-CPI not blocked.</span>
+            </label>
+        </div>
+        <div class="mt-4">
+            <label class="block">
+                <span class="block text-[11px] uppercase tracking-wider text-stone-600 mb-1">Megacap earnings (TICKER: YYYY-MM-DD per line)</span>
+                <textarea name="megacap_earnings" rows="5"
+                          class="mono w-full px-3 py-2 border border-stone-300 rounded text-[12px] focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                          spellcheck="false" placeholder="NVDA: 2026-05-28&#10;MSFT: 2026-07-29">{{ earnings_text }}</textarea>
+                <span class="block text-[11px] text-stone-500 mt-1">Block fires when ticker matches and date is within 14 days.</span>
+            </label>
+        </div>
+    </section>
+
+    <div class="flex justify-end gap-2">
+        <button type="submit"
+                class="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium">Save risk limits</button>
+    </div>
+</form>
+
+{% endblock %}

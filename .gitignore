@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Local secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# User data — runtime files outside the repo, but defensive ignore in case
+# a user runs the server from a clone
+~/.gamma/
+
+# Plugin-local user data (broker exports, master log, journal) — kept out
+# of the repo so the plugin ships clean
+data/td_exports/
+data/master_trade_log.csv
+data/pregames/
+data/journal/
+data/charts/
+
+# Allow the curated bundled assets
+!data/bars/
+!data/reference/
+!data/td_exports/.gitkeep
+
+# Build / dist
+dist/
+build/
+*.tar.gz
+
+# Logs
+*.log
+/tmp/gammatrade.log

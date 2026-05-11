@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-3xl">
+    Conditional entries waiting on a level break. The watcher polls every
+    5s — when underlying price crosses the level in the specified direction,
+    the trigger fires through pre-trade gates and creates an entry. Per
+    <span class="mono text-[11px]">data-derived</span>:
+    pre-commit IF/THEN at /pregame, click only on objective break.
+</p>
+
+<!-- Set price (mock; replace with broker feed in live mode) -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6 max-w-3xl">
+    <div class="flex items-baseline justify-between mb-3">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">
+            Mock price feed <span class="ml-1 text-stone-400 normal-case">(replaces with ib_insync market data in live mode)</span>
+        </div>
+        <form method="post" action="/triggers/evaluate" class="inline">
+            <button class="text-[12px] text-stone-500 hover:text-stone-900">↻ Force-evaluate now</button>
+        </form>
+    </div>
+
+    <form method="post" action="/prices" class="flex items-center gap-2 mb-3">
+        <input type="text" name="ticker" placeholder="TICKER" required
+               class="mono uppercase w-28 px-3 py-1.5 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        <input type="number" step="0.01" name="price" placeholder="price" required
+               class="mono w-32 px-3 py-1.5 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        <button type="submit" class="bg-stone-900 hover:bg-stone-700 text-white px-3 py-1.5 rounded-md text-[12px] font-medium">Set price</button>
+        <span class="text-[11px] text-stone-500 ml-2">Setting a price auto-evaluates triggers.</span>
+    </form>
+
+    {% if prices %}
+    <div class="flex flex-wrap gap-2">
+        {% for p in prices %}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-stone-100 text-[12px]">
+            <span class="mono font-medium">{{ p.ticker }}</span>
+            <span class="mono text-stone-700">{{ "%.2f"|format(p.price) }}</span>
+            <span class="text-stone-400 text-[10px]">{{ p.updated_at[11:16] }}</span>
+        </span>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-[12px] text-stone-500">No prices set. Triggers won't evaluate without a current price.</div>
+    {% endif %}
+</div>
+
+<!-- Waiting -->
+<section class="mb-10">
+    <h2 class="text-[15px] font-semibold text-stone-700 mb-3">Waiting ({{ waiting|length }})</h2>
+
+    {% if waiting %}
+    <div class="space-y-3">
+        {% for t in waiting %}
+        <div class="bg-white border border-stone-200 rounded-lg p-4">
+            <div class="flex items-start justify-between gap-4">
+
+                <!-- Conditions list (left) -->
+                <div class="flex-1">
+                    <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">
+                        Conditions ({{ t._statuses|length }})
+                        {% if t._all_met %}
+                        <span class="ml-2 inline-block px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 normal-case">ALL MET — firing</span>
+                        {% endif %}
+                    </div>
+                    <div class="space-y-1.5">
+                        {% for s in t._statuses %}
+                        <div class="flex items-center gap-3 text-sm">
+                            {% if s.met is true %}
+                            <span class="w-4 h-4 rounded-full bg-emerald-500 text-white text-[10px] flex items-center justify-center flex-shrink-0">✓</span>
+                            {% elif s.met is false %}
+                            <span class="w-4 h-4 rounded-full bg-stone-300 text-white text-[10px] flex items-center justify-center flex-shrink-0">·</span>
+                            {% else %}
+                            <span class="w-4 h-4 rounded-full border border-stone-300 text-stone-400 text-[10px] flex items-center justify-center flex-shrink-0">?</span>
+                            {% endif %}
+
+                            <span class="mono font-medium w-16">{{ s.ticker }}</span>
+                            <span class="text-stone-600 w-28 text-[12px]">
+                                {% if s.direction == 'above' %}above
+                                {% elif s.direction == 'below' %}below
+                                {% elif s.direction == 'hold_above' %}hold above
+                                {% elif s.direction == 'hold_below' %}hold below
+                                {% elif s.direction == 'bounce_above' %}bounce↑ off
+                                {% elif s.direction == 'bounce_below' %}bounce↓ off
+                                {% else %}{{ s.direction }}{% endif %}
+                            </span>
+                            <span class="mono text-stone-700 w-20">{{ "%g"|format(s.level) }}</span>
+
+                            {% if s.current is not none %}
+                            <span class="text-stone-400 text-[11px]">·</span>
+                            <span class="mono text-stone-600 w-20 text-[12px]">@ {{ "%.2f"|format(s.current) }}</span>
+                            {% set delta = s.current - s.level %}
+                            <span class="mono text-[11px] {% if s.met %}text-emerald-600{% else %}text-stone-500{% endif %}">
+                                {{ "%+.2f"|format(delta) }}
+                            </span>
+
+                            {# HOLD/BOUNCE detail #}
+                            {% if s.detail and s.direction.startswith('hold_') %}
+                                {% if s.detail.streak_seconds is defined %}
+                                <span class="text-[10px] text-stone-500 italic ml-1">
+                                    streak {{ "%.0f"|format(s.detail.streak_seconds) }}s{% if s.detail.needed %} / need {{ s.detail.needed }}s{% endif %}
+                                </span>
+                                {% endif %}
+                            {% elif s.detail and s.direction.startswith('bounce_') %}
+                                <span class="text-[10px] text-stone-500 italic ml-1">
+                                    {% if s.detail.touched %}<span class="text-emerald-600">touched</span>{% else %}<span>not yet touched</span>{% endif %}
+                                    · {% if s.detail.confirmed %}<span class="text-emerald-600">confirmed</span>{% else %}<span>unconfirmed</span>{% endif %}
+                                </span>
+                            {% endif %}
+                            {% else %}
+                            <span class="text-stone-400 text-[11px] italic">no price set</span>
+                            {% endif %}
+
+                            {% if s.kind == 'primary' %}
+                            <span class="ml-auto text-[10px] uppercase tracking-wider text-stone-400">primary</span>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- Contract + meta (right) -->
+                <div class="flex-shrink-0 text-right">
+                    <div class="mono font-medium">{{ t.ticker }} {{ t.expiry }} {{ t.strike|int }}{{ t.right }}</div>
+                    <div class="text-[11px] text-stone-500 mt-0.5">
+                        qty {{ t.contracts }} · {{ t.order_type }}{% if t.limit_price %} @ {{ "%.2f"|format(t.limit_price) }}{% endif %}
+                    </div>
+                    <div class="text-[11px] text-stone-500 mt-0.5">
+                        {{ t.regime_tag }} · {{ t.chain_role }} · {{ t.sector }}
+                    </div>
+                    <div class="text-[11px] text-stone-400 mt-1.5 mono">
+                        created {{ t.created_at[11:16] }}{% if t.expires_at %} · exp {{ t.expires_at[11:16] }}{% endif %}
+                    </div>
+                    <div class="flex items-center justify-end gap-3 mt-2">
+                        <a href="/triggers/{{ t.trigger_id }}/edit" class="text-[11px] text-emerald-700 hover:underline">Edit</a>
+                        <form method="post" action="/triggers/{{ t.trigger_id }}/cancel" class="inline">
+                            <button class="text-[11px] text-stone-500 hover:text-red-700">Cancel</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-white border border-stone-200 rounded-lg p-8 text-center text-stone-500 text-sm">
+        No waiting triggers. Set one from
+        <a href="/pregame" class="text-emerald-700 hover:underline">/pregame</a>
+        or
+        <a href="/entries/new" class="text-emerald-700 hover:underline">/entries/new</a>.
+    </div>
+    {% endif %}
+</section>
+
+<!-- Fired (recent) -->
+{% if fired %}
+<section class="mb-10">
+    <h2 class="text-[15px] font-semibold text-stone-700 mb-3">Fired ({{ fired|length }})</h2>
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+                <tr>
+                    <th class="text-left px-4 py-2.5 font-medium">Trigger</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Contract</th>
+                    <th class="text-right px-4 py-2.5 font-medium">Fired at price</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Fired</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Intent</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for t in fired %}
+                <tr class="hover:bg-stone-50">
+                    <td class="px-4 py-3">
+                        <div class="font-medium mono">{{ t.ticker }}</div>
+                        <div class="text-[11px] text-stone-500">{{ t.direction }} <span class="mono">{{ "%g"|format(t.level) }}</span></div>
+                    </td>
+                    <td class="px-4 py-3 mono text-[12px]">{{ t.expiry }} {{ t.strike|int }}{{ t.right }} ×{{ t.contracts }}</td>
+                    <td class="px-4 py-3 text-right mono">{{ "%.2f"|format(t.last_seen_price) if t.last_seen_price else "—" }}</td>
+                    <td class="px-4 py-3 text-stone-500 text-[12px] mono">{{ t.fired_at[11:16] if t.fired_at else "—" }}</td>
+                    <td class="px-4 py-3 mono text-[11px] text-stone-500">{{ t.fired_intent_id[:8] if t.fired_intent_id else "—" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+<!-- Rejected by gate -->
+{% if rejected %}
+<section class="mb-10">
+    <h2 class="text-[15px] font-semibold text-stone-700 mb-3">Rejected by gate ({{ rejected|length }})</h2>
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+                <tr>
+                    <th class="text-left px-4 py-2.5 font-medium">Trigger</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Reason</th>
+                    <th class="text-left px-4 py-2.5 font-medium">When</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for t in rejected %}
+                <tr class="hover:bg-stone-50">
+                    <td class="px-4 py-3 mono">{{ t.ticker }} {{ t.direction }} {{ "%g"|format(t.level) }}</td>
+                    <td class="px-4 py-3 text-[12px] text-red-700">{{ t.rejection_reason }}</td>
+                    <td class="px-4 py-3 text-stone-500 text-[12px] mono">{{ t.fired_at[11:16] if t.fired_at else "—" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+<!-- Canceled / expired (collapsed) -->
+{% if canceled or expired %}
+<details class="bg-white border border-stone-200 rounded-lg">
+    <summary class="px-4 py-2.5 text-[12px] uppercase tracking-wider text-stone-500 font-medium hover:bg-stone-50">
+        Canceled / expired ({{ canceled|length + expired|length }})
+    </summary>
+    <table class="w-full text-sm border-t border-stone-100">
+        <tbody class="divide-y divide-stone-100">
+            {% for t in canceled + expired %}
+            <tr>
+                <td class="px-4 py-2 mono">{{ t.ticker }} {{ t.direction }} {{ "%g"|format(t.level) }}</td>
+                <td class="px-4 py-2"><span class="px-1.5 py-0.5 rounded bg-stone-100 text-stone-700 text-[11px]">{{ t.status }}</span></td>
+                <td class="px-4 py-2 text-stone-500 text-[12px] mono">{{ t.created_at[:16] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
+
+{% endblock %}

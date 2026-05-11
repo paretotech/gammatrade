@@ -1,0 +1,196 @@
+tp_ladder_by_dte:
+  0-1:
+    tp1_pct: 1.21
+    tp2_pct: 1.56
+    tp3_pct: 2.55
+    splits:
+    - 0.5
+    - 0.25
+    - 0.25
+  2-4:
+    tp1_pct: 0.44
+    tp2_pct: 0.57
+    tp3_pct: 0.93
+    splits:
+    - 0.5
+    - 0.25
+    - 0.25
+  5-9:
+    tp1_pct: 0.235
+    tp2_pct: 0.304
+    tp3_pct: 0.496
+    splits:
+    - 0.5
+    - 0.25
+    - 0.25
+  10-21:
+    tp1_pct: 0.199
+    tp2_pct: 0.257
+    tp3_pct: 0.42
+    splits:
+    - 0.5
+    - 0.25
+    - 0.25
+regime_multipliers:
+  HOT:
+    tp_mult: 1.1
+    stop_mult: 1.2
+  WARM:
+    tp_mult: 1.05
+    stop_mult: 1.1
+  NORMAL:
+    tp_mult: 1.0
+    stop_mult: 1.0
+  TRAP:
+    tp_mult: 0.85
+    stop_mult: 0.9
+  COLD:
+    tp_mult: 0.65
+    stop_mult: 0.8
+sector_caps:
+  warn_at: 3
+  reject_at: 4
+daily_caps:
+  count_based:
+    default: 1
+    hot: 3
+    warm: 2
+    normal: 1
+    trap: 1
+    cold: 0
+  count_enforcement: caution
+  loss_cap_dollars: 1000
+  loss_enforcement: caution
+  kill_after_losses: 2
+risk_limits:
+  max_open_positions: 5
+  position_count_enforcement: decline
+  per_trade_max_dollars: 1500
+  normal_entry_dollars: 1000
+  size_enforcement: decline
+  min_dte: 0
+  max_dte: 21
+  dte_enforcement: caution
+  entry_warmup_seconds: 60
+blackout_windows:
+  pre_fomc:
+    enabled: true
+    enforcement: decline
+    description: "Tue 09:30 ET \u2192 Wed 14:30 ET of FOMC week"
+  cpi_day:
+    enabled: true
+    enforcement: decline
+  pre_megacap_earnings:
+    enabled: true
+    enforcement: caution
+    same_ticker_only: true
+event_calendar:
+  fomc_meetings:
+  - '2026-01-28'
+  - '2026-03-18'
+  - '2026-04-29'
+  - '2026-06-17'
+  - '2026-07-29'
+  - '2026-09-16'
+  - '2026-10-28'
+  - '2026-12-09'
+  cpi_releases:
+  - '2026-01-13'
+  - '2026-02-11'
+  - '2026-03-11'
+  - '2026-04-14'
+  - '2026-05-13'
+  - '2026-06-11'
+  - '2026-07-15'
+  - '2026-08-12'
+  - '2026-09-10'
+  - '2026-10-14'
+  - '2026-11-12'
+  - '2026-12-10'
+  megacap_earnings: {}
+index_strike_rule:
+  tickers:
+  - QQQ
+  - SPX
+  - SPY
+  max_otm_strikes: 1
+time_based_close:
+  '0': 15:55 ET
+  '1': 10:30 ET on expiry day
+  default: null
+familiar_tickers:
+- TSLA
+- META
+- NVDA
+- MU
+- SPX
+- QQQ
+- SPY
+- COIN
+- MSTR
+- AMD
+- PLTR
+- AAPL
+- GOOGL
+- MSFT
+- NBIS
+- CRWV
+chain_roll:
+  default_roll_pct: 0.5
+  early_morning_roll_pct: 0.7
+  late_day_roll_pct: 0.35
+roll_strike_rules:
+  call_offset_strikes: 1
+  put_offset_strikes: 1
+trigger_dynamics:
+  hold_seconds: 300
+  bounce_window_sec: 3600
+  bounce_eps_pct: 0.001
+ticker_sectors:
+  chips:
+  - NVDA
+  - AMD
+  - MU
+  - AVGO
+  - TSM
+  - ARM
+  - QCOM
+  - IREN
+  - SMH
+  - INTC
+  - MRVL
+  megacap-tech:
+  - AAPL
+  - MSFT
+  - GOOGL
+  - META
+  - AMZN
+  - TSLA
+  - NFLX
+  crypto-adjacent:
+  - COIN
+  - MSTR
+  - HOOD
+  - IBIT
+  - MARA
+  - RIOT
+  cloud-data:
+  - SNDK
+  - CRWV
+  - NBIS
+  - ORCL
+  - PLTR
+  - SNOW
+  - NOW
+  index:
+  - QQQ
+  - SPY
+  - SPX
+  - IWM
+  - DIA
+  finance:
+  - JPM
+  - GS
+  - BAC
+  - MS
+  - WFC

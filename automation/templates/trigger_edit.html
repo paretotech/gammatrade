@@ -1,0 +1,343 @@
+{% extends "base.html" %}
+
+{% block page_meta %}
+<a href="/triggers" class="text-stone-500 text-sm hover:text-stone-900">← all triggers</a>
+{% endblock %}
+
+{% block content %}
+
+<div class="bg-white border border-stone-200 rounded-lg p-6 max-w-2xl">
+
+    <div class="bg-stone-50 border border-stone-200 rounded-md px-4 py-2.5 mb-5 text-sm flex items-center justify-between">
+        <div>
+            <span class="text-stone-700 font-medium">Editing trigger</span>
+            <span class="mono text-stone-600 ml-2">{{ trigger.ticker }} {{ trigger.expiry }} {{ trigger.strike|int if trigger.strike == trigger.strike|int else trigger.strike }}{{ trigger.right }}</span>
+        </div>
+        <span class="text-[11px] text-stone-500">ticker locked · sector locked</span>
+    </div>
+
+    <p class="text-sm text-stone-600 mb-6 leading-relaxed">
+        Watcher continues evaluating with new values after save. Pre-trade gates run when the
+        condition fires; rejection logs to the event stream.
+    </p>
+
+    <form method="post" action="/triggers/{{ trigger.trigger_id }}/edit" class="space-y-5">
+
+        <!-- Contract -->
+        <div>
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Contract</div>
+            <div class="grid grid-cols-12 gap-2">
+                <div class="col-span-3 mono px-3 py-2 bg-stone-100 border border-stone-200 rounded-md text-sm text-stone-600">{{ trigger.ticker }}</div>
+                <input type="date" name="expiry" required value="{{ trigger.expiry }}"
+                       class="col-span-3 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <input type="number" step="0.50" name="strike" required value="{{ trigger.strike|int if trigger.strike == trigger.strike|int else trigger.strike }}"
+                       class="col-span-3 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <select name="right" class="col-span-3 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                    <option value="C" {% if trigger.right == 'C' %}selected{% endif %}>Call</option>
+                    <option value="P" {% if trigger.right == 'P' %}selected{% endif %}>Put</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Order -->
+        <div>
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Order</div>
+            <div class="grid grid-cols-12 gap-2" x-data="{type: '{{ trigger.order_type or 'MKT' }}'}">
+                <select name="order_type" x-model="type" class="col-span-4 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                    <option value="MKT">Market</option>
+                    <option value="LMT">Limit</option>
+                </select>
+                <input type="number" step="0.01" name="limit_price" placeholder="limit price"
+                       value="{{ trigger.limit_price if trigger.limit_price else '' }}"
+                       :disabled="type === 'MKT'"
+                       class="col-span-5 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:bg-stone-100 disabled:text-stone-400">
+                <input type="number" name="contracts" required value="{{ trigger.contracts }}" min="1"
+                       class="col-span-3 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                       title="Contracts">
+            </div>
+            <div class="text-[11px] text-stone-500 mt-1.5">Type / Limit price / Contracts</div>
+        </div>
+
+        <!-- Trigger condition -->
+        <div x-data="{
+                extras: {{ extras_json }},
+                addExtra(t) { this.extras.push({ticker: t || '', direction: 'above', level: ''}); },
+                removeExtra(i) { this.extras.splice(i, 1); },
+                conditionsJson() { return JSON.stringify(this.extras.filter(e => e.ticker && e.level !== '').map(e => ({ticker: e.ticker.toUpperCase(), direction: e.direction, level: parseFloat(e.level)}))); }
+             }">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Trigger condition</div>
+
+            <div class="space-y-2">
+                <!-- Primary -->
+                <div class="grid grid-cols-12 gap-2 items-center">
+                    <span class="col-span-2 text-[11px] text-stone-500 uppercase tracking-wider">Primary</span>
+                    <select name="direction" class="col-span-3 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                        {% for opt, label in [('above','Above'),('below','Below'),('hold_above','Hold above'),('hold_below','Hold below'),('bounce_above','Bounce off (up)'),('bounce_below','Bounce off (down)')] %}
+                        <option value="{{ opt }}" {% if trigger.direction == opt %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    <input type="number" step="0.01" name="level" required value="{{ trigger.level }}"
+                           class="col-span-7 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                </div>
+
+                <!-- Extras -->
+                <template x-for="(c, i) in extras" :key="i">
+                    <div class="grid grid-cols-12 gap-2 items-center">
+                        <span class="col-span-2 text-[11px] text-stone-500 uppercase tracking-wider">AND</span>
+                        <input type="text" x-model="c.ticker" placeholder="QQQ"
+                               class="col-span-2 mono uppercase px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                        <select x-model="c.direction" class="col-span-3 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                            <option value="above">Above</option>
+                            <option value="below">Below</option>
+                            <option value="hold_above">Hold above</option>
+                            <option value="hold_below">Hold below</option>
+                            <option value="bounce_above">Bounce off (up)</option>
+                            <option value="bounce_below">Bounce off (down)</option>
+                        </select>
+                        <input type="number" step="0.01" x-model="c.level" placeholder="level"
+                               class="col-span-4 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                        <button type="button" @click="removeExtra(i)"
+                                class="col-span-1 text-stone-400 hover:text-red-700 text-sm">✕</button>
+                    </div>
+                </template>
+
+                <div class="flex gap-1.5 pt-1">
+                    <button type="button" @click="addExtra('QQQ')" class="text-[11px] px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 text-stone-700">+ QQQ</button>
+                    <button type="button" @click="addExtra('SPY')" class="text-[11px] px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 text-stone-700">+ SPY</button>
+                    <button type="button" @click="addExtra('SPX')" class="text-[11px] px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 text-stone-700">+ SPX</button>
+                    <button type="button" @click="addExtra('VIX')" class="text-[11px] px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 text-stone-700">+ VIX</button>
+                    <button type="button" @click="addExtra('')" class="text-[11px] px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 text-stone-700">+ Custom</button>
+                </div>
+
+                <input type="hidden" name="extra_conditions_json" :value="conditionsJson()">
+            </div>
+            <div class="text-[11px] text-stone-500 mt-1.5">
+                System fires the entry only when ALL conditions are met simultaneously.
+            </div>
+        </div>
+
+        <!-- TP ladder (table-style, mirrors New Entry) -->
+        <div x-data='{
+                presets: {{ presets_json }},
+                splitMaps: {"100": [100, 0, 0], "50_50": [50, 50, 0], "50_25_25": [50, 25, 25], "33_33_34": [33, 33, 34]},
+                choice: "{{ trigger.tp_ladder_choice or "auto" }}",
+                splitChoice: "{{ trigger.tp_split_choice or "50_25_25" }}",
+                tp1: {{ tp_custom.tp1 if tp_custom.tp1 is not none else "null" }},
+                tp2: {{ tp_custom.tp2 if tp_custom.tp2 is not none else "null" }},
+                tp3: {{ tp_custom.tp3 if tp_custom.tp3 is not none else "null" }},
+                s1: 50, s2: 25, s3: 25,
+                init() {
+                    if (this.choice !== "custom") this.applyPreset(this.choice);
+                    this.applySplit(this.splitChoice);
+                },
+                applyPreset(name) {
+                    this.choice = name;
+                    if (name === "custom") return;
+                    const p = this.presets[name];
+                    if (!p) return;
+                    this.tp1 = p.tp1; this.tp2 = p.tp2; this.tp3 = p.tp3;
+                },
+                applySplit(name) {
+                    this.splitChoice = name;
+                    const m = this.splitMaps[name];
+                    if (!m) return;
+                    this.s1 = m[0]; this.s2 = m[1]; this.s3 = m[2];
+                },
+                onEdit() { this.choice = "custom"; }
+             }'>
+            <div class="flex items-baseline justify-between mb-2 gap-2 flex-wrap">
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">TP ladder</div>
+                <div class="flex items-center gap-2">
+                    <div class="inline-flex border border-stone-300 rounded-md text-[12px] overflow-hidden">
+                        <template x-for="opt in [['100','100'],['50_50','50/50'],['50_25_25','50/25/25'],['33_33_34','33/33/34']]" :key="opt[0]">
+                            <button type="button" @click="applySplit(opt[0])"
+                                    :class="splitChoice === opt[0] ? 'bg-stone-900 text-white' : 'bg-white text-stone-600 hover:bg-stone-50'"
+                                    class="px-2.5 py-1 border-r border-stone-300 last:border-r-0 mono"
+                                    x-text="opt[1]"></button>
+                        </template>
+                    </div>
+                    <select x-model="choice" @change="applyPreset($event.target.value)"
+                            class="text-[12px] px-2 py-1 border border-stone-300 rounded-md focus:outline-none focus:border-emerald-500">
+                        <option value="auto">Auto · DTE-aware</option>
+                        <option value="intraday">Intraday · 2-4 DTE (Mode 1)</option>
+                        <option value="swing">Swing · 5-9 DTE (Mode 2)</option>
+                        <option value="fixed_45_60_90">Fixed +45/+60/+90 · +45/+60/+90</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                </div>
+            </div>
+            <input type="hidden" name="tp_ladder_choice" :value="choice">
+            <input type="hidden" name="tp_split_choice" :value="splitChoice">
+
+            <div class="bg-white border border-stone-200 rounded-md overflow-hidden">
+                <table class="w-full text-sm">
+                    <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+                        <tr>
+                            <th class="text-left px-3 py-1.5 font-medium w-20">Phase</th>
+                            <th class="text-right px-3 py-1.5 font-medium">Target % above entry</th>
+                            <th class="text-right px-3 py-1.5 font-medium w-20">Split %</th>
+                            <th class="text-right px-3 py-1.5 font-medium w-32">Move stop to</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-stone-100">
+                        <tr>
+                            <td class="px-3 py-1.5 mono font-medium text-stone-500 text-[12px]">Initial</td>
+                            <td class="px-3 py-1.5 text-right text-stone-400 text-[12px]">—</td>
+                            <td class="px-3 py-1.5 text-right text-stone-400 text-[12px]">—</td>
+                            <td class="px-3 py-1.5 text-right">
+                                <input type="number" step="0.5" name="stop_initial_pct"
+                                       value="{{ stop_pcts.initial }}"
+                                       class="mono w-20 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="px-3 py-1.5 mono font-medium text-emerald-700 text-[12px]">TP1</td>
+                            <td class="px-3 py-1.5 text-right">
+                                <input type="number" step="1" name="tp_custom_tp1" placeholder="+24"
+                                       x-model="tp1" @input="onEdit()"
+                                       :disabled="tp1 === null"
+                                       class="mono w-20 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:bg-stone-100 disabled:text-stone-400">
+                            </td>
+                            <td class="px-3 py-1.5 text-right mono text-stone-600 text-[12px]" x-text="s1 + '%'"></td>
+                            <td class="px-3 py-1.5 text-right">
+                                <input type="number" step="0.5" name="stop_after_tp1_pct"
+                                       value="{{ stop_pcts.after_tp1 }}"
+                                       class="mono w-20 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                            </td>
+                        </tr>
+                        <tr :class="s2 === 0 ? 'text-stone-400' : ''">
+                            <td class="px-3 py-1.5 mono font-medium text-[12px]" :class="s2 === 0 ? 'text-stone-400' : 'text-emerald-700'">TP2</td>
+                            <td class="px-3 py-1.5 text-right">
+                                <input type="number" step="1" name="tp_custom_tp2" placeholder="+30"
+                                       x-model="tp2" @input="onEdit()"
+                                       :disabled="tp2 === null || s2 === 0"
+                                       class="mono w-20 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:bg-stone-100 disabled:text-stone-400">
+                            </td>
+                            <td class="px-3 py-1.5 text-right mono text-[12px]" :class="s2 === 0 ? 'text-stone-400' : 'text-stone-600'" x-text="s2 + '%'"></td>
+                            <td class="px-3 py-1.5 text-right">
+                                <input type="number" step="0.5" name="stop_after_tp2_pct"
+                                       value="{{ stop_pcts.after_tp2 }}"
+                                       :disabled="s2 === 0"
+                                       class="mono w-20 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:bg-stone-100 disabled:text-stone-400">
+                            </td>
+                        </tr>
+                        <tr :class="s3 === 0 ? 'text-stone-400' : ''">
+                            <td class="px-3 py-1.5 mono font-medium text-[12px]" :class="s3 === 0 ? 'text-stone-400' : 'text-emerald-700'">TP3</td>
+                            <td class="px-3 py-1.5 text-right">
+                                <input type="number" step="1" name="tp_custom_tp3" placeholder="+50"
+                                       x-model="tp3" @input="onEdit()"
+                                       :disabled="tp3 === null || s3 === 0"
+                                       class="mono w-20 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:bg-stone-100 disabled:text-stone-400">
+                            </td>
+                            <td class="px-3 py-1.5 text-right mono text-[12px]" :class="s3 === 0 ? 'text-stone-400' : 'text-stone-600'" x-text="s3 + '%'"></td>
+                            <td class="px-3 py-1.5 text-right text-stone-400 text-[12px]">closed</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="text-[11px] text-stone-500 mt-1.5 leading-relaxed">
+                "Move stop to" is % from entry: <span class="mono">0</span> = at entry, <span class="mono">-25</span> = 25% below entry (loss limit), <span class="mono">+12</span> = 12% above entry (lock profit).
+                Stop ratchets one-way as TPs fire — never moves down.
+            </div>
+        </div>
+
+        <!-- Roll plan (multi-roll) -->
+        <div x-data='{
+                rolls: {{ roll_plan_init }},
+                ticker: "{{ trigger.ticker }}",
+                contractStrike: {{ trigger.strike }},
+                contractRight: "{{ trigger.right }}",
+                tierOffset(trigger) {
+                    const idx = parseInt((trigger || "tp1").replace("tp","")) || 1;
+                    return idx; // tp1=1, tp2=2, tp3=3
+                },
+                defaultNextStrike(trigger) {
+                    const interval = this.ticker === "SPX" ? 5 : 1;
+                    const steps = this.tierOffset(trigger) * interval;
+                    return this.contractRight === "P"
+                        ? this.contractStrike - steps
+                        : this.contractStrike + steps;
+                },
+                addRoll() {
+                    const used = new Set(this.rolls.map(r => r.trigger));
+                    const next = ["tp1","tp2","tp3"].find(t => !used.has(t)) || "tp1";
+                    this.rolls.push({trigger: next, retain_pct: 50, next_strike: this.defaultNextStrike(next)});
+                },
+                removeRoll(i) { this.rolls.splice(i, 1); },
+                ensureStrike(r) {
+                    if (r.next_strike === undefined || r.next_strike === null || r.next_strike === "") {
+                        r.next_strike = this.defaultNextStrike(r.trigger);
+                    }
+                    return r.next_strike;
+                },
+                rollsJson() {
+                    return JSON.stringify(this.rolls
+                        .filter(r => r.retain_pct !== "" && r.retain_pct !== null)
+                        .map(r => ({
+                            trigger: r.trigger,
+                            retain_pct: parseFloat(r.retain_pct) / 100,
+                            next_strike: r.next_strike ? parseFloat(r.next_strike) : null,
+                        })));
+                }
+             }'
+             x-init="rolls.forEach(r => { if (r.next_strike == null) r.next_strike = defaultNextStrike(r.trigger); })">
+            <div class="flex items-baseline justify-between mb-2">
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Roll plan</div>
+                <button type="button" @click="addRoll()"
+                        class="text-[11px] px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 text-stone-700">+ Add roll</button>
+            </div>
+
+            <div x-show="rolls.length === 0" class="bg-stone-50 border border-stone-200 rounded-md p-3 text-[12px] text-stone-500">
+                No rolls planned. Position closes after final TP / stop.
+            </div>
+
+            <div class="space-y-1.5">
+                <template x-for="(r, i) in rolls" :key="i">
+                    <div class="flex flex-wrap items-center gap-2 bg-white border border-stone-200 rounded-md px-3 py-2 text-sm">
+                        <span class="text-stone-600">After</span>
+                        <select x-model="r.trigger" class="mono px-2 py-1 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                            <option value="tp1">TP1</option>
+                            <option value="tp2">TP2</option>
+                            <option value="tp3">TP3</option>
+                        </select>
+                        <span class="text-stone-600">hits, roll</span>
+                        <input type="number" step="1" min="0" max="100" x-model="r.retain_pct"
+                               class="mono w-16 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                        <span class="text-stone-600">% of profit · next strike</span>
+                        <input type="number" step="0.5" :value="ensureStrike(r)" @input="r.next_strike = $event.target.value"
+                               class="mono w-20 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                               :title="'default ' + defaultNextStrike(r.trigger) + ' (chains by tier — TP1+1, TP2+2, TP3+3 for calls)'">
+                        <span class="text-[11px] text-stone-500" x-text="contractRight"></span>
+                        <button type="button" @click="removeRoll(i)"
+                                class="ml-auto text-stone-400 hover:text-red-700 text-sm">✕</button>
+                    </div>
+                </template>
+            </div>
+
+            <input type="hidden" name="roll_plan_json" :value="rollsJson()">
+            <input type="hidden" name="roll_plan" value="{{ trigger.roll_plan or 'default' }}">
+
+            <div class="text-[11px] text-stone-500 mt-1.5 leading-relaxed">
+                Each rule fires when its TP hits — opens a new position at the specified strike using the % of realized profit as capital.
+                Default next strike: <span class="mono">+1</span> for calls, <span class="mono">−1</span> for puts (SPX uses $5 intervals).
+            </div>
+        </div>
+
+        <input type="hidden" name="stop_discipline" value="be_stop">
+
+        <!-- Notes -->
+        <div>
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Notes</div>
+            <textarea name="notes" rows="2"
+                      class="w-full px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">{{ trigger.notes or '' }}</textarea>
+        </div>
+
+        <div class="pt-2 flex items-center gap-3">
+            <button type="submit" class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-md text-sm font-medium transition-colors">Save changes</button>
+            <a href="/triggers" class="text-sm text-stone-500 hover:text-stone-900">Cancel</a>
+        </div>
+
+    </form>
+</div>
+
+{% endblock %}

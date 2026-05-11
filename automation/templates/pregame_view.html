@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+
+{% macro stat_block(label, stats) %}
+<div class="text-[11px]">
+    <div class="text-stone-500 uppercase tracking-wider mb-0.5">{{ label }}</div>
+    {% if stats.n %}
+    <div class="mono">
+        n={{ stats.n }} ·
+        med {% if stats.median_roi is not none %}{{ "%+.0f"|format(stats.median_roi * 100) }}%{% else %}—{% endif %} ·
+        win {% if stats.win_rate is not none %}{{ "%.0f"|format(stats.win_rate * 100) }}%{% else %}—{% endif %}
+    </div>
+    {% else %}
+    <div class="text-stone-400">no history</div>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{% block page_meta %}
+<a href="/pregame" class="text-stone-500 text-sm hover:text-stone-900">← all pregames</a>
+{% endblock %}
+
+{% block content %}
+
+<!-- Macro confluence (parsed from REGIME CHECK + commentary) -->
+{% if macro_confluence %}
+<div class="bg-emerald-50 border border-emerald-200 rounded-lg p-5 mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <div class="text-[11px] uppercase tracking-wider text-emerald-800 font-semibold">Macro confluence detected</div>
+        <span class="text-[11px] text-emerald-700">auto-attached to triggers as AND-conditions</span>
+    </div>
+    <div class="flex flex-wrap gap-2 text-sm">
+        {% for m in macro_confluence %}
+        <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-emerald-200 text-stone-700">
+            <span class="mono font-medium">{{ m.ticker }}</span>
+            <span class="text-stone-500 text-[12px]">
+                {% if m.direction == 'hold_above' %}hold above{% elif m.direction == 'hold_below' %}hold below
+                {% elif m.direction == 'bounce_above' %}bounce↑{% elif m.direction == 'bounce_below' %}bounce↓
+                {% elif m.direction == 'below' %}below{% else %}above{% endif %}
+            </span>
+            <span class="mono">{{ "%g"|format(m.level) }}</span>
+        </span>
+        {% endfor %}
+    </div>
+    <details class="mt-3">
+        <summary class="text-[11px] text-emerald-700 hover:text-emerald-900 cursor-pointer">show source lines</summary>
+        <ul class="mt-2 space-y-1 text-[12px] text-stone-600">
+            {% for m in macro_confluence %}
+            <li><span class="mono text-stone-700">{{ m.ticker }}:</span> <span class="italic">{{ m.raw_line }}</span></li>
+            {% endfor %}
+        </ul>
+    </details>
+</div>
+{% endif %}
+
+<!-- Claude analysis -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <div class="flex items-baseline gap-2">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-semibold">Claude analysis</div>
+            {% if ai_result and ai_result.cached %}
+            <span class="text-[10px] text-stone-400 normal-case">cached {{ ai_result.ts[11:16] }} UTC</span>
+            {% endif %}
+        </div>
+        <form method="post" action="/pregame/{{ note_date }}/analyze" class="inline">
+            <button type="submit"
+                    class="text-[11px] px-2 py-1 rounded bg-stone-900 hover:bg-stone-700 text-white">
+                {% if ai_result %}Re-analyze{% else %}Run analysis{% endif %}
+            </button>
+        </form>
+    </div>
+
+    {% if not ai_result and not api_key_set %}
+    <div class="bg-amber-50 border border-amber-200 rounded-md p-3 text-[12px] text-amber-900 leading-relaxed">
+        <span class="font-medium">ANTHROPIC_API_KEY not set.</span>
+        Export it before launching the server: <span class="mono">export ANTHROPIC_API_KEY=sk-…</span>.
+        Compares your pregame against reference cohort history and the strategy guide.
+    </div>
+    {% elif not ai_result %}
+    <div class="text-sm text-stone-500 leading-relaxed">
+        Click <span class="font-medium">Run analysis</span> to have Claude review this pregame against
+        reference trade history and the strategy guide. Output is structured: day read,
+        per-pick verdicts, operational notes. Cached after first run.
+    </div>
+    {% elif ai_result.status == 'no_api_key' %}
+    <div class="bg-amber-50 border border-amber-200 rounded-md p-3 text-[12px] text-amber-900">
+        {{ ai_result.error }}
+    </div>
+    {% elif ai_result.status == 'error' %}
+    <div class="bg-red-50 border border-red-200 rounded-md p-3 text-[12px] text-red-900">
+        <span class="font-medium">Analysis failed:</span> {{ ai_result.error }}
+    </div>
+    {% elif ai_result.analysis %}
+    {% set a = ai_result.analysis %}
+
+    <!-- Day read -->
+    <div class="mb-4">
+        <div class="flex items-baseline gap-3 mb-2">
+            <div class="text-[16px] font-semibold text-stone-900">{{ a.day_read.headline }}</div>
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] uppercase tracking-wider
+                {% if a.day_read.conviction == 'high' %}bg-emerald-50 text-emerald-700
+                {% elif a.day_read.conviction == 'moderate' %}bg-stone-100 text-stone-700
+                {% elif a.day_read.conviction == 'low' %}bg-amber-50 text-amber-700
+                {% else %}bg-red-50 text-red-700{% endif %}">{{ a.day_read.conviction }}</span>
+        </div>
+        <div class="text-[13px] text-stone-600 leading-relaxed">{{ a.day_read.regime_assessment }}</div>
+        {% if a.day_read.blackouts_or_warnings %}
+        <div class="mt-2 flex flex-wrap gap-1.5">
+            {% for w in a.day_read.blackouts_or_warnings %}
+            <span class="text-[11px] px-2 py-0.5 rounded bg-red-50 text-red-700">⚠ {{ w }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Per-pick verdicts -->
+    {% if a.picks %}
+    <div class="mb-4 space-y-2">
+        {% for p in a.picks %}
+        <div class="border border-stone-200 rounded-md px-3 py-2">
+            <div class="flex items-baseline gap-3 mb-1">
+                <span class="mono font-semibold">{{ p.ticker }}</span>
+                <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded
+                    {% if p.verdict == 'LIKE' %}bg-emerald-50 text-emerald-700
+                    {% elif p.verdict == 'WATCH' %}bg-stone-100 text-stone-700
+                    {% else %}bg-red-50 text-red-700{% endif %}">{{ p.verdict }}</span>
+                <span class="text-[10px] uppercase tracking-wider text-stone-500">{{ p.suggested_size }} size</span>
+            </div>
+            <div class="text-[12px] text-stone-700 leading-relaxed">{{ p.reasoning }}</div>
+            {% if p.key_risks %}
+            <div class="text-[11px] text-stone-500 mt-1.5">
+                Risks: {% for r in p.key_risks %}{{ r }}{% if not loop.last %} · {% endif %}{% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Operational notes -->
+    {% if a.operational_notes %}
+    <div>
+        <div class="text-[10px] uppercase tracking-wider text-stone-500 font-semibold mb-1.5">Operational notes</div>
+        <ul class="text-[12px] text-stone-700 space-y-1 leading-relaxed">
+            {% for n in a.operational_notes %}
+            <li class="flex gap-2"><span class="text-stone-400 shrink-0">·</span><span>{{ n }}</span></li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <div class="text-[10px] text-stone-400 mt-3 pt-2 border-t border-stone-100 mono">
+        {{ ai_result.model }}{% if ai_result.usage %} · in {{ ai_result.usage.input }}t / out {{ ai_result.usage.output }}t{% if ai_result.usage.cache_read %} · cache read {{ ai_result.usage.cache_read }}t{% endif %}{% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Regime context -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6">
+    <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Regime context</div>
+    <div class="grid grid-cols-4 gap-6 text-sm">
+        <div>
+            <div class="text-stone-500 text-[12px]">VIX</div>
+            <div class="mono text-lg font-semibold mt-0.5">{{ parsed.regime.vix or "—" }}</div>
+        </div>
+        <div>
+            <div class="text-stone-500 text-[12px]">Expected regime</div>
+            <div class="mono text-lg font-semibold mt-0.5">{{ parsed.regime.regime or "—" }}</div>
+        </div>
+        <div>
+            <div class="text-stone-500 text-[12px]">Max daily loss</div>
+            <div class="mono text-lg font-semibold mt-0.5">${{ parsed.regime.max_daily_loss or "—" }}</div>
+        </div>
+        <div>
+            <div class="text-stone-500 text-[12px]">DTE bucket (today)</div>
+            <div class="mono text-lg font-semibold mt-0.5">{{ ladder_preview.bucket }}</div>
+        </div>
+    </div>
+</div>
+
+<!-- Actionable picks -->
+<section class="mb-10">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Actionable picks ({{ candidates|length }})</h2>
+        <span class="text-[11px] text-stone-500">PRE-GAME PICKS list — top 3-5 only. Watchlist below is context.</span>
+    </div>
+
+    {% if candidates %}
+    <div class="grid gap-3">
+        {% for c in candidates %}
+        <div class="bg-white border border-stone-200 rounded-lg p-5 card">
+            <div class="flex items-start justify-between mb-3">
+                <div class="flex items-baseline gap-3">
+                    <div class="text-[20px] font-semibold mono">{{ c.ticker }}</div>
+                    <div class="text-stone-600 text-sm">{{ c.direction }} <span class="mono font-semibold">{{ "%g"|format(c.level) }}</span></div>
+                    <div class="text-stone-400 text-[12px] italic">{{ c.raw_line }}</div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="text-right">
+                        <div class="text-[10px] uppercase tracking-wider text-stone-500">Score</div>
+                        <div class="mono text-lg font-semibold {% if c.score >= 80 %}text-emerald-700{% elif c.score >= 60 %}text-stone-900{% else %}text-amber-700{% endif %}">{{ "%.0f"|format(c.score) }}</div>
+                    </div>
+                    <a href="/entries/new?ticker={{ c.ticker }}&level={{ c.level }}&direction={{ c.direction }}&note_date={{ note_date }}&extra={{ macro_for_url|urlencode }}"
+                       class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors">
+                       Set trigger →
+                    </a>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-4 gap-4 pt-3 border-t border-stone-100">
+                {{ stat_block("Reference · all", c.historical.reference.all) }}
+                {{ stat_block("Reference · calls", c.historical.reference.calls) }}
+                {{ stat_block("Reference · puts", c.historical.reference.puts) }}
+                {{ stat_block("You", c.historical.user.all) }}
+            </div>
+
+            {% if c.flags %}
+            <div class="mt-3 pt-3 border-t border-stone-100 flex flex-wrap gap-1.5">
+                {% for f in c.flags %}
+                <span class="inline-block px-2 py-0.5 rounded text-[11px]
+                    {% if 'WATCH-ONLY' in f or 'thin' in f %}bg-amber-50 text-amber-800
+                    {% elif 'TOP-5' in f %}bg-emerald-50 text-emerald-800
+                    {% elif 'INDEX' in f %}bg-stone-100 text-stone-700
+                    {% else %}bg-stone-100 text-stone-700{% endif %}">{{ f }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-white border border-stone-200 rounded-lg p-8 text-center text-stone-500 text-sm">
+        No actionable picks parsed. Did the pregame include a "PRE-GAME PICKS" section?
+    </div>
+    {% endif %}
+</section>
+
+<!-- TP ladder reference -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-10">
+    <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">If you enter today (DTE={{ ladder_preview.bucket }}, regime={{ ladder_preview.regime }})</div>
+    <div class="grid grid-cols-4 gap-6 text-sm">
+        <div><div class="text-stone-500 text-[11px]">TP1</div><div class="mono text-emerald-700 font-semibold">+{{ "%.1f"|format(ladder_preview.tp1_pct * 100) }}%</div></div>
+        <div><div class="text-stone-500 text-[11px]">TP2</div><div class="mono text-emerald-700 font-semibold">+{{ "%.1f"|format(ladder_preview.tp2_pct * 100) }}%</div></div>
+        <div><div class="text-stone-500 text-[11px]">TP3</div><div class="mono text-emerald-700 font-semibold">+{{ "%.1f"|format(ladder_preview.tp3_pct * 100) }}%</div></div>
+        <div><div class="text-stone-500 text-[11px]">Stop multiplier</div><div class="mono">{{ "%.2f"|format(ladder_preview.stop_mult) }}</div></div>
+    </div>
+</div>
+
+<!-- Watchlist (context) -->
+{% if watch_candidates %}
+<section class="mb-10">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Watchlist · context only ({{ watch_candidates|length }})</h2>
+        <span class="text-[11px] text-stone-500">NOT actionable. Per data-derived.</span>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+                <tr>
+                    <th class="text-left px-4 py-2 font-medium">Ticker</th>
+                    <th class="text-left px-4 py-2 font-medium">Setup</th>
+                    <th class="text-right px-4 py-2 font-medium">Score</th>
+                    <th class="text-right px-4 py-2 font-medium">Ref n</th>
+                    <th class="text-right px-4 py-2 font-medium">Ref med</th>
+                    <th class="text-right px-4 py-2 font-medium">Ref win</th>
+                    <th class="text-left px-4 py-2 font-medium">Flags</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for c in watch_candidates %}
+                <tr class="hover:bg-stone-50">
+                    <td class="px-4 py-2.5 mono font-medium">{{ c.ticker }}</td>
+                    <td class="px-4 py-2.5 text-stone-600">{{ c.direction }} <span class="mono">{{ "%g"|format(c.level) }}</span></td>
+                    <td class="px-4 py-2.5 text-right mono {% if c.score >= 80 %}text-emerald-700{% elif c.score < 40 %}text-amber-700{% endif %}">{{ "%.0f"|format(c.score) }}</td>
+                    <td class="px-4 py-2.5 text-right mono">{{ c.historical.reference.all.n }}</td>
+                    <td class="px-4 py-2.5 text-right mono">{% if c.historical.reference.all.median_roi is not none %}{{ "%+.0f"|format(c.historical.reference.all.median_roi * 100) }}%{% else %}—{% endif %}</td>
+                    <td class="px-4 py-2.5 text-right mono">{% if c.historical.reference.all.win_rate is not none %}{{ "%.0f"|format(c.historical.reference.all.win_rate * 100) }}%{% else %}—{% endif %}</td>
+                    <td class="px-4 py-2.5 text-[11px] text-stone-500">{{ c.flags | join(' · ') }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+<!-- Raw sections (collapsible) -->
+<section class="mb-10">
+    <h2 class="text-[15px] font-semibold text-stone-700 mb-3">Raw sections</h2>
+    <div class="space-y-2">
+        {% for name, content in parsed.sections.items() %}
+        <details class="bg-white border border-stone-200 rounded-lg">
+            <summary class="px-4 py-2.5 text-[12px] uppercase tracking-wider text-stone-500 font-medium hover:bg-stone-50">
+                {{ name }} <span class="text-stone-400 normal-case ml-1">({{ content.split('\n') | length }} lines)</span>
+            </summary>
+            <pre class="px-4 py-3 text-[12px] mono whitespace-pre-wrap text-stone-700 border-t border-stone-100 leading-relaxed">{{ content }}</pre>
+        </details>
+        {% endfor %}
+    </div>
+</section>
+
+{% endblock %}

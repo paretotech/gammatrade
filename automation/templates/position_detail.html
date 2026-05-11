@@ -1,0 +1,442 @@
+{% extends "base.html" %}
+
+{% block page_meta %}
+<a href="/" class="text-stone-500 text-sm hover:text-stone-900">← dashboard</a>
+{% endblock %}
+
+{% block content %}
+
+<!-- Position summary -->
+<div class="grid grid-cols-5 gap-3 mb-3">
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Entry</div>
+        <div class="mono text-xl mt-1.5 font-semibold">${{ "%.2f"|format(avg_entry) }}</div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Filled</div>
+        <div class="mono text-xl mt-1.5 font-semibold">{{ entry_qty }}</div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Closed</div>
+        <div class="mono text-xl mt-1.5 font-semibold text-stone-700">{{ exit_qty }}</div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Residual</div>
+        <div class="mono text-xl mt-1.5 font-semibold {% if residual > 0 %}text-emerald-700{% else %}text-stone-400{% endif %}">{{ residual }}</div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Realized P&L</div>
+        <div class="mono text-xl mt-1.5 font-semibold {% if realized_pnl > 0 %}text-emerald-700{% elif realized_pnl < 0 %}text-red-700{% else %}text-stone-700{% endif %}">{{ realized_pnl | money }}</div>
+    </div>
+</div>
+
+<!-- Stop discipline + MFE strip -->
+<div class="bg-white border border-stone-200 rounded-lg p-4 mb-8 flex items-center gap-8 text-sm">
+    <div>
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Stop discipline</div>
+        <div class="mt-1 font-medium">
+            {% if intent.stop_discipline == 'be_stop' %}BE stop · entry, never moves
+            {% elif intent.stop_discipline == 'half_mfe' %}Half-MFE trail
+            {% elif intent.stop_discipline == 'custom_trail' %}Custom trail
+            {% elif intent.stop_discipline == 'none' %}<span class="text-amber-700">None</span>
+            {% else %}{{ intent.stop_discipline }}{% endif %}
+        </div>
+    </div>
+    <div>
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">MFE</div>
+        <div class="mono mt-1 font-semibold {% if intent.max_option_price and intent.max_option_price > avg_entry %}text-emerald-700{% endif %}">
+            {% if intent.max_option_price %}${{ "%.2f"|format(intent.max_option_price) }}
+            {% if avg_entry > 0 %}<span class="text-[11px] text-stone-500 ml-1">({{ "%+.0f"|format((intent.max_option_price/avg_entry - 1) * 100) }}%)</span>{% endif %}
+            {% else %}—{% endif %}
+        </div>
+    </div>
+    <div>
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Current stop level</div>
+        <div class="mono mt-1 font-semibold">
+            {% set stop_order = orders|selectattr('kind','equalto','be_stop')|selectattr('status','equalto','working')|first %}
+            {% if stop_order %}${{ "%.2f"|format(stop_order.target_price) }}
+            {% if stop_order.target_price > avg_entry %}<span class="text-[11px] text-emerald-600 ml-1">+{{ "%+.0f"|format((stop_order.target_price/avg_entry - 1) * 100) }}% locked</span>{% endif %}
+            {% else %}<span class="text-stone-400">—</span>{% endif %}
+        </div>
+    </div>
+    <div>
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Current price</div>
+        <div class="mono mt-1 font-semibold">{% if intent.current_option_price %}${{ "%.2f"|format(intent.current_option_price) }}{% else %}—{% endif %}</div>
+    </div>
+</div>
+
+<!-- Simulator (mock; replace with broker tick stream in live mode) -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-8 max-w-2xl">
+    <div class="flex items-baseline justify-between mb-3">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">
+            Simulate option price
+        </div>
+        <span class="text-[11px] text-stone-400 normal-case">
+            Mock — replaces with broker tick stream in live mode
+        </span>
+    </div>
+    <p class="text-[12px] text-stone-600 mb-3 leading-relaxed">
+        Set the current option price to evaluate working orders. TPs fill if price ≥ target;
+        BE stop fires if price ≤ entry. <span class="font-medium">Per Tier 1 #1: BE stop level
+        never moves through the lifecycle — quantity reduces as TPs fire.</span>
+    </p>
+    <form method="post" action="/positions/{{ intent.intent_id }}/simulate" class="flex items-center gap-2">
+        <input type="number" step="0.01" name="option_price" required
+               value="{{ intent.current_option_price or avg_entry }}"
+               class="mono w-32 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        <button type="submit" class="bg-stone-900 hover:bg-stone-700 text-white px-4 py-2 rounded-md text-sm font-medium">
+            Set & evaluate
+        </button>
+        {% if intent.current_option_price %}
+        <span class="text-[12px] text-stone-500 ml-3">
+            last set: <span class="mono">${{ "%.2f"|format(intent.current_option_price) }}</span>
+        </span>
+        {% endif %}
+    </form>
+
+    <!-- Quick presets -->
+    <div class="flex flex-wrap gap-1.5 mt-3">
+        {% for o in orders if o.kind in ('tp1','tp2','tp3') %}
+        <form method="post" action="/positions/{{ intent.intent_id }}/simulate" class="inline">
+            <input type="hidden" name="option_price" value="{{ '%.2f'|format(o.target_price) }}">
+            <button class="text-[11px] px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 text-stone-700">
+                Hit {{ o.kind|upper }} (${{ "%.2f"|format(o.target_price) }})
+            </button>
+        </form>
+        {% endfor %}
+        {% for o in orders if o.kind == 'be_stop' %}
+        <form method="post" action="/positions/{{ intent.intent_id }}/simulate" class="inline">
+            <input type="hidden" name="option_price" value="{{ '%.2f'|format(o.target_price - 0.01) }}">
+            <button class="text-[11px] px-2 py-1 rounded bg-red-50 hover:bg-red-100 text-red-700">
+                Drop to BE (${{ "%.2f"|format(o.target_price - 0.01) }})
+            </button>
+        </form>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Working orders (editable) + filled/canceled (read-only) -->
+<section class="mb-8">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Orders</h2>
+        <span class="text-[11px] text-stone-500">working orders are editable inline</span>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+                <tr>
+                    <th class="text-left px-4 py-2.5 font-medium">Kind</th>
+                    <th class="text-right px-4 py-2.5 font-medium">Target</th>
+                    <th class="text-right px-4 py-2.5 font-medium">Qty</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Status</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Submitted</th>
+                    <th class="text-right px-4 py-2.5 font-medium"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for o in orders %}
+                {% if o.status == 'working' %}
+                <tr class="hover:bg-stone-50">
+                    <form method="post" action="/orders/{{ o.order_id }}/edit" class="contents">
+                        <td class="px-4 py-2">
+                            <span class="font-medium uppercase mono text-[12px]">{{ o.kind }}</span>
+                            {% if o.kind == 'be_stop' %}
+                            <span class="text-[10px] text-stone-500 ml-2">stop level</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-4 py-2 text-right">
+                            <input type="number" step="0.01" name="target_price" required
+                                   value="{{ '%.2f'|format(o.target_price) }}"
+                                   class="mono w-24 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                        </td>
+                        <td class="px-4 py-2 text-right">
+                            <input type="number" step="1" min="1" name="quantity" required
+                                   value="{{ o.quantity }}"
+                                   class="mono w-16 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                        </td>
+                        <td class="px-4 py-2">
+                            <span class="inline-block px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[11px]">working</span>
+                        </td>
+                        <td class="px-4 py-2 text-stone-500 text-[12px] mono">{{ o.submitted_at[11:19] }}</td>
+                        <td class="px-4 py-2 text-right whitespace-nowrap">
+                            <button type="submit" class="text-[11px] px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white">Save</button>
+                    </form>
+                            <button type="button" onclick="document.getElementById('reset-{{ o.order_id }}').submit()"
+                                    class="text-[11px] text-stone-500 hover:text-stone-900 ml-2">Reset</button>
+                            <form id="reset-{{ o.order_id }}" method="post" action="/orders/{{ o.order_id }}/reset" class="hidden"></form>
+                            <button type="button" onclick="if(confirm('Cancel this order?')) document.getElementById('cancel-{{ o.order_id }}').submit()"
+                                    class="text-[11px] text-stone-500 hover:text-red-700 ml-2">Cancel</button>
+                            <form id="cancel-{{ o.order_id }}" method="post" action="/orders/{{ o.order_id }}/cancel" class="hidden"></form>
+                        </td>
+                </tr>
+                {% else %}
+                <tr class="hover:bg-stone-50 {% if o.status == 'canceled' %}text-stone-400{% endif %}">
+                    <td class="px-4 py-2.5">
+                        <span class="font-medium uppercase mono text-[12px]">{{ o.kind }}</span>
+                    </td>
+                    <td class="px-4 py-2.5 text-right mono {% if o.status == 'canceled' %}line-through{% endif %}">{{ "%.2f"|format(o.target_price) }}</td>
+                    <td class="px-4 py-2.5 text-right mono">{{ o.quantity }}</td>
+                    <td class="px-4 py-2.5">
+                        {% if o.status == 'filled' %}
+                        <span class="inline-block px-1.5 py-0.5 rounded bg-stone-100 text-stone-700 text-[11px]">filled</span>
+                        {% elif o.status == 'canceled' %}
+                        <span class="inline-block px-1.5 py-0.5 rounded bg-red-50 text-red-700 text-[11px]">canceled</span>
+                        {% else %}
+                        <span class="inline-block px-1.5 py-0.5 rounded bg-stone-100 text-stone-700 text-[11px]">{{ o.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2.5 text-stone-500 text-[12px] mono">{{ o.submitted_at[11:19] }}</td>
+                    <td class="px-4 py-2.5 text-right whitespace-nowrap">
+                        {% if o.status == 'canceled' %}
+                        <form method="post" action="/orders/{{ o.order_id }}/restore" class="inline">
+                            <button class="text-[11px] px-2 py-1 rounded bg-stone-900 hover:bg-stone-700 text-white">Undo cancel</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="text-[11px] text-stone-500 mt-2">
+        Editing the BE stop overrides the chosen stop discipline for this position. Per <span class="mono">strategy_rules.md</span> Tier 1, the discipline default is BE-at-entry; raising the level is a discretionary override and should be deliberate.
+    </div>
+</section>
+
+<!-- Proposed rolls (auto-generated when a roll-rule TP fires) -->
+{% if proposed_rolls %}
+<section class="mb-8">
+    <h2 class="text-[15px] font-semibold text-stone-700 mb-3">Proposed rolls ({{ proposed_rolls|length }})</h2>
+    <div class="space-y-3">
+        {% for r in proposed_rolls %}
+        <div class="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+            <div class="flex items-baseline justify-between mb-2">
+                <div class="flex items-baseline gap-3">
+                    <div class="text-[14px] font-semibold mono">{{ r.ticker }} {{ r.expiry }} {{ r.strike|int }}{{ r.right }}</div>
+                    <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-700 text-white">{{ r.chain_role }}</span>
+                    <span class="text-[11px] text-stone-600">after TP{{ r.triggered_by_tp }} fired</span>
+                </div>
+                <span class="text-[10px] text-stone-500 mono">{{ r.created_at[11:16] }} UTC</span>
+            </div>
+            {% if r.notes %}
+            <div class="text-[12px] text-stone-700 mb-3 leading-relaxed">{{ r.notes }}</div>
+            {% endif %}
+
+            <form method="post" action="/positions/{{ intent.intent_id }}/rolls/{{ r.intent_id }}/confirm"
+                  class="bg-white rounded-md border border-stone-200 p-3 mb-2">
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Confirm roll details</div>
+                <div class="grid grid-cols-12 gap-2 items-center">
+                    <span class="col-span-2 text-[11px] text-stone-500">Contracts</span>
+                    <input type="number" name="contracts" min="1" required value="1"
+                           class="col-span-2 mono px-2 py-1 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+
+                    <span class="col-span-2 text-[11px] text-stone-500">Order</span>
+                    <select name="order_type" class="col-span-2 px-2 py-1 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500"
+                            x-data="{type: 'MKT'}" x-model="type">
+                        <option value="MKT">Market</option>
+                        <option value="LMT">Limit</option>
+                    </select>
+
+                    <input type="number" step="0.01" name="limit_price" placeholder="limit (LMT)"
+                           class="col-span-4 mono px-2 py-1 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                </div>
+                <div class="text-[11px] text-stone-500 mt-1.5">
+                    {% if r.retained_profit_usd %}
+                    <span class="font-medium">${{ "%.0f"|format(r.retained_profit_usd) }} retained</span> from TP{{ r.triggered_by_tp }} on parent. Use this as capital guidance for sizing.
+                    {% endif %}
+                </div>
+                <div class="flex items-center gap-2 mt-3">
+                    <button type="submit" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-[12px] font-medium">
+                        Confirm roll → open R{{ '2' if r.chain_role == 'R2' else '3' if r.chain_role == 'R3' else '?' }}
+                    </button>
+                    <button type="button" onclick="if(confirm('Cancel this roll proposal?')) document.getElementById('cancel-roll-{{ r.intent_id }}').submit()"
+                            class="text-[12px] text-stone-500 hover:text-red-700">Cancel proposal</button>
+                </div>
+            </form>
+            <form id="cancel-roll-{{ r.intent_id }}" method="post"
+                  action="/positions/{{ intent.intent_id }}/rolls/{{ r.intent_id }}/cancel"
+                  class="hidden"></form>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<!-- Roll plan -->
+<section class="mb-8">
+    <form method="post" action="/positions/{{ intent.intent_id }}/rolls/edit"
+          x-data='{
+            rolls: {{ roll_plan_json or "[]" }},
+            firedTiers: {{ fired_tiers | tojson }},
+            actionByTier: {{ roll_action_by_tier | tojson }},
+            ticker: "{{ intent.ticker }}",
+            contractStrike: {{ intent.strike }},
+            contractRight: "{{ intent.right }}",
+            tierOffset(trigger) {
+                return parseInt((trigger || "tp1").replace("tp","")) || 1;
+            },
+            defaultNextStrike(trigger) {
+                const interval = this.ticker === "SPX" ? 5 : 1;
+                const steps = this.tierOffset(trigger) * interval;
+                return this.contractRight === "P"
+                    ? this.contractStrike - steps
+                    : this.contractStrike + steps;
+            },
+            tierLabel(t) { return ({tp1:"TP1",tp2:"TP2",tp3:"TP3"})[t] || t.toUpperCase(); },
+            tierIdx(t) { return parseInt(t.replace("tp","")); },
+            statusFor(t) {
+                const idx = this.tierIdx(t);
+                const action = this.actionByTier[idx];
+                if (action) return action; // "proposed" | "opened" | "canceled"
+                return this.firedTiers.includes(idx) ? "ready" : "pending";
+            },
+            addRoll() {
+                const used = new Set(this.rolls.map(r => r.trigger));
+                const next = ["tp1","tp2","tp3"].find(t => !used.has(t)) || "tp1";
+                this.rolls.push({trigger: next, retain_pct: 0.50, next_strike: this.defaultNextStrike(next)});
+            },
+            removeRoll(i) { this.rolls.splice(i, 1); },
+            displayPct(r) { return Math.round((r.retain_pct || 0) * 100); },
+            setPct(r, v) { r.retain_pct = parseFloat(v) / 100; },
+            ensureStrike(r) {
+                if (r.next_strike === undefined || r.next_strike === null || r.next_strike === "") {
+                    r.next_strike = this.defaultNextStrike(r.trigger);
+                }
+                return r.next_strike;
+            },
+            rollsJson() {
+                return JSON.stringify(this.rolls.map(r => ({
+                    trigger: r.trigger,
+                    retain_pct: r.retain_pct,
+                    next_strike: r.next_strike ? parseFloat(r.next_strike) : null,
+                })));
+            }
+          }'
+          x-init="rolls.forEach(r => { if (r.next_strike == null) r.next_strike = defaultNextStrike(r.trigger); })">
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Roll plan</h2>
+            <div class="flex items-center gap-2">
+                <button type="button" @click="addRoll()"
+                        class="text-[11px] px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 text-stone-700">+ Add roll</button>
+                <button type="submit"
+                        class="text-[11px] px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white">Save</button>
+            </div>
+        </div>
+
+        <div x-show="rolls.length === 0"
+             class="bg-white border border-stone-200 rounded-lg p-6 text-center text-stone-500 text-sm">
+            No rolls planned. Position closes after final TP / stop.
+        </div>
+
+        <div x-show="rolls.length > 0" class="bg-white border border-stone-200 rounded-lg divide-y divide-stone-100">
+            <template x-for="(r, i) in rolls" :key="i">
+                <div class="flex flex-wrap items-center gap-2 px-4 py-2.5 text-sm">
+                    <span class="text-stone-600">After</span>
+                    <select x-model="r.trigger"
+                            class="mono px-2 py-1 border border-stone-300 rounded text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                        <option value="tp1">TP1</option>
+                        <option value="tp2">TP2</option>
+                        <option value="tp3">TP3</option>
+                    </select>
+                    <span class="text-stone-600">hits, roll</span>
+                    <input type="number" step="1" min="0" max="100"
+                           :value="displayPct(r)"
+                           @input="setPct(r, $event.target.value)"
+                           class="mono w-16 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                    <span class="text-stone-600">% · next strike</span>
+                    <input type="number" step="0.5" :value="ensureStrike(r)" @input="r.next_strike = $event.target.value"
+                           class="mono w-20 px-2 py-1 border border-stone-300 rounded text-sm text-right focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                           :title="'default ' + defaultNextStrike(r.trigger) + ' (chains TP1+1, TP2+2, TP3+3 for calls)'">
+                    <span class="text-[11px] text-stone-500" x-text="contractRight"></span>
+
+                    <span class="ml-auto inline-flex items-center gap-1.5">
+                        <template x-if="statusFor(r.trigger) === 'opened'">
+                            <span class="text-[11px] uppercase tracking-wider text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded">● opened</span>
+                        </template>
+                        <template x-if="statusFor(r.trigger) === 'proposed'">
+                            <span class="text-[11px] uppercase tracking-wider text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">⟳ proposed</span>
+                        </template>
+                        <template x-if="statusFor(r.trigger) === 'canceled'">
+                            <span class="text-[11px] uppercase tracking-wider text-stone-500 bg-stone-100 px-1.5 py-0.5 rounded line-through">canceled</span>
+                        </template>
+                        <template x-if="statusFor(r.trigger) === 'ready'">
+                            <span class="text-[11px] uppercase tracking-wider text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">✓ ready</span>
+                        </template>
+                        <template x-if="statusFor(r.trigger) === 'pending'">
+                            <span class="text-[11px] uppercase tracking-wider text-stone-500 bg-stone-100 px-1.5 py-0.5 rounded"
+                                  x-text="'pending ' + tierLabel(r.trigger)"></span>
+                        </template>
+                        <button type="button" @click="removeRoll(i)"
+                                class="text-stone-400 hover:text-red-700 text-sm ml-2">✕</button>
+                    </span>
+                </div>
+            </template>
+        </div>
+
+        <input type="hidden" name="roll_plan_json" :value="rollsJson()">
+
+        <div class="text-[11px] text-stone-500 mt-2 leading-relaxed">
+            Status reflects whether the trigger TP has already fired. <span class="font-medium">Ready</span> rolls can be opened as a new position;
+            <span class="font-medium">pending</span> rolls fire when their TP hits. Edit and Save persists the plan.
+        </div>
+    </form>
+</section>
+
+<!-- Fills timeline -->
+<section class="mb-8">
+    <h2 class="text-[15px] font-semibold text-stone-700 mb-3">Fills</h2>
+    {% if fills %}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+                <tr>
+                    <th class="text-left px-4 py-2.5 font-medium">When</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Side</th>
+                    <th class="text-right px-4 py-2.5 font-medium">Qty</th>
+                    <th class="text-right px-4 py-2.5 font-medium">Price</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Tier</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for f in fills %}
+                <tr class="hover:bg-stone-50">
+                    <td class="px-4 py-2.5 text-stone-500 text-[12px] mono">{{ f.ts[11:19] }}</td>
+                    <td class="px-4 py-2.5">
+                        {% if f.side == 'BUY' %}
+                        <span class="inline-block px-1.5 py-0.5 rounded bg-stone-100 text-stone-700 text-[11px] font-medium">BUY</span>
+                        {% else %}
+                        <span class="inline-block px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[11px] font-medium">SELL</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2.5 text-right mono">{{ f.contracts }}</td>
+                    <td class="px-4 py-2.5 text-right mono">{{ "%.2f"|format(f.price) }}</td>
+                    <td class="px-4 py-2.5 text-[12px] text-stone-600">
+                        {% if f.is_entry %}entry
+                        {% elif f.tp_tier %}TP{{ f.tp_tier }}
+                        {% else %}BE stop{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="bg-white border border-stone-200 rounded-lg p-6 text-center text-stone-500 text-sm">No fills yet.</div>
+    {% endif %}
+</section>
+
+<!-- Position context -->
+<details class="bg-white border border-stone-200 rounded-lg max-w-2xl">
+    <summary class="px-4 py-2.5 text-[12px] uppercase tracking-wider text-stone-500 font-medium hover:bg-stone-50">Configuration</summary>
+    <div class="px-4 py-3 text-sm border-t border-stone-100 grid grid-cols-2 gap-y-2 gap-x-8">
+        <div><span class="text-stone-500">TP ladder choice:</span> {{ intent.tp_ladder_choice }}</div>
+        <div><span class="text-stone-500">Roll plan:</span> {{ intent.roll_plan }}</div>
+        <div><span class="text-stone-500">Regime:</span> {{ intent.regime_tag }}</div>
+        <div><span class="text-stone-500">Chain role:</span> {{ intent.chain_role }}</div>
+        <div><span class="text-stone-500">Sector:</span> {{ intent.sector }}</div>
+        <div class="col-span-2 mono text-[11px] text-stone-400">id {{ intent.intent_id }}</div>
+    </div>
+</details>
+
+{% endblock %}

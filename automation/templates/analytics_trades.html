@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+
+{# Import status banner #}
+{% if import_status == 'started' %}
+<div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-lg px-4 py-2.5 mb-4 flex items-center justify-between">
+    <span>✓ Broker CSV uploaded — ingestion pipeline running in background. Refresh in 1–2 min to see new rows.</span>
+    <a href="/analytics/trades" class="text-[11px] text-emerald-700 hover:underline">dismiss</a>
+</div>
+{% endif %}
+{% if import_error %}
+<div class="bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg px-4 py-2.5 mb-4 flex items-center justify-between">
+    <span>⛔ Import failed: {{ import_error }}</span>
+    <a href="/analytics/trades" class="text-[11px] text-red-700 hover:underline">dismiss</a>
+</div>
+{% endif %}
+
+{# Row of: date-range chips (left) + import button (right) #}
+<div class="flex items-center justify-between flex-wrap gap-3 mb-4">
+    <div>{% include "_date_range_chips.html" %}</div>
+
+    <form method="post" action="/analytics/trades/import" enctype="multipart/form-data"
+          x-data="{ filename: '' }" class="flex items-center gap-2"
+          title="Accepts TD orderStatus CSV or IBKR TRANSACTIONS CSV — auto-detects format">
+        <label class="inline-flex items-center gap-2 cursor-pointer text-[11px] text-stone-600 hover:text-stone-900">
+            <input type="file" name="td_csv" accept=".csv" required class="hidden"
+                   @change="filename = $event.target.files[0]?.name || ''; if(filename) $event.target.form.submit();">
+            <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-stone-900 hover:bg-stone-700 text-white text-[12px] font-medium transition-colors">
+                + Import broker CSV
+            </span>
+        </label>
+        <template x-if="filename">
+            <span class="text-[11px] text-stone-500 mono" x-text="filename"></span>
+        </template>
+    </form>
+</div>
+
+{# Reset the mb-4 from the chips partial since we just wrapped it #}
+<style>.mb-4 + form { margin-top: 0; }</style>
+
+{# Pre-shape rows for client-side sort: roi_pct, exit_date #}
+{% set table_rows = [] %}
+{% for t in trades %}
+{% set _ = table_rows.append({
+    "intent_id": t.intent_id,
+    "entry_date": t.first_entry_ts[:10] if t.first_entry_ts else "",
+    "exit_date": t.last_exit_ts[:10] if t.last_exit_ts else "",
+    "ticker": t.ticker,
+    "expiry": t.expiry,
+    "strike": t.strike|int if t.strike == t.strike|int else t.strike,
+    "right": t.right,
+    "entry_qty": t.entry_qty,
+    "avg_entry": t.avg_entry,
+    "avg_exit": t.avg_exit if t.avg_exit is not none else 0,
+    "roi_pct": (t.roi * 100) | round(1),
+    "realized_pnl": t.realized_pnl,
+    "tp_tiers_hit": t.tp_tiers_hit,
+    "regime": t.regime_tag,
+    "chain_role": t.chain_role or "solo",
+    "sector": t.sector,
+    "notes": (t.notes or ""),
+    "tp_fills": t.tp_fills,
+    "mfe_in_pct": t.mfe_in_pct,
+    "mfe_exp_pct": t.mfe_exp_pct,
+    "mae_in_pct": t.mae_in_pct,
+    "mae_exp_pct": t.mae_exp_pct,
+    "actual_pct": t.actual_pct,
+    "capture_pct": t.capture_pct,
+    "capture_exp_pct": t.capture_exp_pct,
+}) %}
+{% endfor %}
+
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden"
+     x-data='{
+        rows: {{ table_rows | tojson }},
+        sortKey: "entry_date",
+        sortDir: -1,
+        expanded: {},
+        toggle(id) { this.expanded[id] = !this.expanded[id]; },
+        isOpen(id) { return !!this.expanded[id]; },
+        fmtPct(v) {
+            if (v === null || v === undefined) return "—";
+            return (v >= 0 ? "+" : "") + v + "%";
+        },
+        fmtPctPlain(v) {
+            if (v === null || v === undefined) return "—";
+            return v + "%";
+        },
+        sort(key) {
+            if (this.sortKey === key) { this.sortDir = -this.sortDir; }
+            else { this.sortKey = key; this.sortDir = -1; }
+            this.rows.sort((a, b) => {
+                const av = a[key], bv = b[key];
+                if (typeof av === "string") return this.sortDir * av.localeCompare(bv);
+                return this.sortDir * ((av > bv) - (av < bv));
+            });
+        },
+        arrow(key) { return this.sortKey === key ? (this.sortDir === -1 ? "↓" : "↑") : ""; }
+     }'>
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">Closed trades</h2>
+        <span class="text-[11px] text-stone-500" x-text="rows.length + ' shown · click headers to sort'"></span>
+    </div>
+
+    <template x-if="rows.length === 0">
+        <p class="text-sm text-stone-500 text-center py-12">No closed trades in selected range.</p>
+    </template>
+
+    <template x-if="rows.length > 0">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider select-none">
+                <tr>
+                    <th class="w-6"></th>
+                    <th class="text-left px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('entry_date')">Entry <span x-text="arrow('entry_date')"></span></th>
+                    <th class="text-left px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('ticker')">Ticker <span x-text="arrow('ticker')"></span></th>
+                    <th class="text-left px-3 py-2 font-medium">Contract</th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('entry_qty')">Qty <span x-text="arrow('entry_qty')"></span></th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('avg_entry')">Entry $ <span x-text="arrow('avg_entry')"></span></th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('avg_exit')">Exit $ <span x-text="arrow('avg_exit')"></span></th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('roi_pct')">ROI <span x-text="arrow('roi_pct')"></span></th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('realized_pnl')">P&L <span x-text="arrow('realized_pnl')"></span></th>
+                    <th class="text-left px-3 py-2 font-medium">TPs</th>
+                    <th class="text-left px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('regime')">Regime <span x-text="arrow('regime')"></span></th>
+                    <th class="text-left px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('chain_role')">Role <span x-text="arrow('chain_role')"></span></th>
+                </tr>
+            </thead>
+            <template x-for="r in rows" :key="r.intent_id">
+                <tbody class="divide-y divide-stone-100 border-b border-stone-100">
+                    <tr class="hover:bg-stone-50 cursor-pointer" @click="toggle(r.intent_id)">
+                        <td class="px-2 text-center text-stone-400 select-none"
+                            x-text="isOpen(r.intent_id) ? '▾' : '▸'"></td>
+                        <td class="px-3 py-1.5 mono text-[12px] text-stone-600" x-text="r.entry_date"></td>
+                        <td class="px-3 py-1.5 mono font-medium" @click.stop>
+                            <a :href="'/positions/' + r.intent_id" class="hover:text-emerald-700" x-text="r.ticker"></a>
+                        </td>
+                        <td class="px-3 py-1.5 mono text-[12px] text-stone-500" x-text="r.expiry + ' ' + r.strike + r.right"></td>
+                        <td class="px-3 py-1.5 text-right mono text-[12px]" x-text="r.entry_qty"></td>
+                        <td class="px-3 py-1.5 text-right mono text-[12px]" x-text="r.avg_entry.toFixed(2)"></td>
+                        <td class="px-3 py-1.5 text-right mono text-[12px]" x-text="r.avg_exit ? r.avg_exit.toFixed(2) : '—'"></td>
+                        <td class="px-3 py-1.5 text-right mono text-[12px]"
+                            :class="r.roi_pct > 0 ? 'text-emerald-700' : (r.roi_pct < 0 ? 'text-red-700' : '')"
+                            x-text="(r.roi_pct >= 0 ? '+' : '') + r.roi_pct.toFixed(0) + '%'"></td>
+                        <td class="px-3 py-1.5 text-right mono font-medium"
+                            :class="r.realized_pnl > 0 ? 'text-emerald-700' : (r.realized_pnl < 0 ? 'text-red-700' : '')"
+                            x-text="(r.realized_pnl >= 0 ? '+$' : '-$') + Math.abs(r.realized_pnl).toLocaleString(undefined, {maximumFractionDigits: 0})"></td>
+                        <td class="px-3 py-1.5">
+                            <template x-for="tier in r.tp_tiers_hit" :key="tier">
+                                <span class="text-[10px] mono uppercase px-1 py-0.5 rounded bg-emerald-50 text-emerald-700 mr-0.5" x-text="'TP' + tier"></span>
+                            </template>
+                            <template x-if="r.tp_tiers_hit.length === 0">
+                                <span class="text-[10px] mono text-stone-400">stop</span>
+                            </template>
+                        </td>
+                        <td class="px-3 py-1.5 text-[11px] text-stone-600" x-text="r.regime"></td>
+                        <td class="px-3 py-1.5 text-[11px]">
+                            <template x-if="r.chain_role !== 'solo'">
+                                <span class="mono text-emerald-700" x-text="r.chain_role"></span>
+                            </template>
+                            <template x-if="r.chain_role === 'solo'">
+                                <span class="text-stone-400">solo</span>
+                            </template>
+                        </td>
+                    </tr>
+                    <tr x-show="isOpen(r.intent_id)" class="bg-stone-50/70">
+                        <td></td>
+                        <td colspan="11" class="px-4 py-4">
+                            <div class="grid grid-cols-2 gap-x-8 gap-y-4 max-w-4xl">
+                                <!-- LEFT: MFE / MAE block -->
+                                <div>
+                                    <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-2 font-semibold">Trade envelope (% from entry)</div>
+                                    <table class="w-full text-[12px]">
+                                        <tbody class="divide-y divide-stone-200">
+                                            <tr>
+                                                <td class="py-1 text-stone-500">MFE in trade</td>
+                                                <td class="py-1 text-right mono"
+                                                    :class="r.mfe_in_pct > 0 ? 'text-emerald-700' : (r.mfe_in_pct < 0 ? 'text-red-700' : '')"
+                                                    x-text="fmtPct(r.mfe_in_pct)"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">Actual %</td>
+                                                <td class="py-1 text-right mono font-medium"
+                                                    :class="r.actual_pct > 0 ? 'text-emerald-700' : (r.actual_pct < 0 ? 'text-red-700' : '')"
+                                                    x-text="fmtPct(r.actual_pct)"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">Capture %</td>
+                                                <td class="py-1 text-right mono text-stone-700"
+                                                    x-text="fmtPctPlain(r.capture_pct)"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">MFE to expiry</td>
+                                                <td class="py-1 text-right mono"
+                                                    :class="r.mfe_exp_pct > 0 ? 'text-emerald-700' : (r.mfe_exp_pct < 0 ? 'text-red-700' : '')"
+                                                    x-text="fmtPct(r.mfe_exp_pct)"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">Cap. exp %</td>
+                                                <td class="py-1 text-right mono text-stone-700"
+                                                    x-text="fmtPctPlain(r.capture_exp_pct)"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">MAE in trade</td>
+                                                <td class="py-1 text-right mono"
+                                                    :class="r.mae_in_pct < 0 ? 'text-red-700' : ''"
+                                                    x-text="fmtPct(r.mae_in_pct)"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">MAE to expiry</td>
+                                                <td class="py-1 text-right mono"
+                                                    :class="r.mae_exp_pct < 0 ? 'text-red-700' : ''"
+                                                    x-text="fmtPct(r.mae_exp_pct)"></td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <!-- RIGHT: metadata -->
+                                <div>
+                                    <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-2 font-semibold">Context</div>
+                                    <table class="w-full text-[12px]">
+                                        <tbody class="divide-y divide-stone-200">
+                                            <tr>
+                                                <td class="py-1 text-stone-500">Sector</td>
+                                                <td class="py-1 text-right mono" x-text="r.sector || '—'"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">Entry date</td>
+                                                <td class="py-1 text-right mono" x-text="r.entry_date"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">Exit date</td>
+                                                <td class="py-1 text-right mono" x-text="r.exit_date || '—'"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">Realized $</td>
+                                                <td class="py-1 text-right mono font-medium"
+                                                    :class="r.realized_pnl > 0 ? 'text-emerald-700' : (r.realized_pnl < 0 ? 'text-red-700' : '')"
+                                                    x-text="(r.realized_pnl >= 0 ? '+$' : '-$') + Math.abs(r.realized_pnl).toLocaleString(undefined, {maximumFractionDigits: 0})"></td>
+                                            </tr>
+                                            <tr>
+                                                <td class="py-1 text-stone-500">Position detail</td>
+                                                <td class="py-1 text-right">
+                                                    <a :href="'/positions/' + r.intent_id" class="text-emerald-700 hover:underline text-[11px]">open →</a>
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+
+                                    <template x-if="r.notes">
+                                        <div class="mt-3">
+                                            <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1 font-semibold">Notes</div>
+                                            <div class="text-[11px] text-stone-700 leading-relaxed bg-white border border-stone-200 rounded p-2.5 whitespace-pre-line"
+                                                 x-text="r.notes"></div>
+                                        </div>
+                                    </template>
+                                </div>
+
+                                <!-- TP fills (full-width below the two columns) -->
+                                <div class="col-span-2">
+                                    <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-2 font-semibold">TP fills</div>
+                                    <template x-if="r.tp_fills && r.tp_fills.length > 0">
+                                        <table class="w-full text-[12px] bg-white border border-stone-200 rounded">
+                                            <thead class="bg-stone-100 text-stone-500 text-[10px] uppercase tracking-wider">
+                                                <tr>
+                                                    <th class="text-left px-3 py-1.5 font-medium">Tier</th>
+                                                    <th class="text-right px-3 py-1.5 font-medium">Exit $</th>
+                                                    <th class="text-right px-3 py-1.5 font-medium">Qty</th>
+                                                    <th class="text-right px-3 py-1.5 font-medium">% from entry</th>
+                                                    <th class="text-right px-3 py-1.5 font-medium">Time to fire</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-stone-100">
+                                                <template x-for="tp in r.tp_fills" :key="tp.tier">
+                                                    <tr>
+                                                        <td class="px-3 py-1.5 mono font-medium text-emerald-700" x-text="'TP' + tp.tier"></td>
+                                                        <td class="px-3 py-1.5 text-right mono" x-text="'$' + tp.price.toFixed(2)"></td>
+                                                        <td class="px-3 py-1.5 text-right mono text-stone-500" x-text="tp.qty"></td>
+                                                        <td class="px-3 py-1.5 text-right mono"
+                                                            :class="tp.pct > 0 ? 'text-emerald-700' : (tp.pct < 0 ? 'text-red-700' : '')"
+                                                            x-text="tp.pct === null ? '—' : (tp.pct >= 0 ? '+' : '') + tp.pct + '%'"></td>
+                                                        <td class="px-3 py-1.5 text-right mono text-stone-600"
+                                                            x-text="tp.mins === null ? '—' : (tp.mins < 60 ? Math.round(tp.mins) + 'm' : (tp.mins < 1440 ? (tp.mins / 60).toFixed(1) + 'h' : (tp.mins / 1440).toFixed(1) + 'd'))"></td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </template>
+                                    <template x-if="!r.tp_fills || r.tp_fills.length === 0">
+                                        <div class="text-[11px] text-stone-500 bg-white border border-stone-200 rounded p-2">
+                                            No TP fills — trade exited via stop or expiry.
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </template>
+        </table>
+    </template>
+</div>
+
+{% endblock %}

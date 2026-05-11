@@ -1,0 +1,50 @@
+{# Renders the result of risk.evaluate(). Inputs:
+     - risk_eval: dict from risk.evaluate(intent, rules)
+   Color: ok=emerald, caution=amber, decline=red. Always shows utilization. #}
+
+<section class="bg-white border border-stone-200 rounded-lg p-5 mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Risk check</h2>
+        <div class="flex items-center gap-3 text-[11px]">
+            {% if risk_eval.blocked %}
+                <span class="px-2 py-0.5 rounded bg-red-100 text-red-800 uppercase tracking-wider">⛔ blocked</span>
+            {% elif risk_eval.warnings %}
+                <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 uppercase tracking-wider">
+                    ⚠ {{ risk_eval.warnings }} warning{{ 's' if risk_eval.warnings != 1 else '' }}
+                </span>
+            {% else %}
+                <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 uppercase tracking-wider">✓ all clear</span>
+            {% endif %}
+            <a href="/settings/risk" class="text-stone-500 hover:text-emerald-700">edit caps →</a>
+        </div>
+    </div>
+
+    <div class="divide-y divide-stone-100">
+        {% for c in risk_eval.checks %}
+        <div class="flex items-center gap-3 py-2 text-sm">
+            {% if c.state == 'ok' %}
+                <span class="w-5 h-5 inline-flex items-center justify-center rounded-full bg-emerald-100 text-emerald-700 text-xs">✓</span>
+            {% elif c.state == 'caution' %}
+                <span class="w-5 h-5 inline-flex items-center justify-center rounded-full bg-amber-100 text-amber-700 text-xs">⚠</span>
+            {% else %}
+                <span class="w-5 h-5 inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-xs">⛔</span>
+            {% endif %}
+
+            <span class="font-medium text-stone-700 w-44 shrink-0">{{ c.name }}</span>
+
+            <span class="text-stone-600 flex-1
+                         {% if c.state == 'decline' %}text-red-700{% elif c.state == 'caution' %}text-amber-700{% endif %}">
+                {{ c.headline }}
+            </span>
+
+            <span class="mono text-[11px] text-stone-500 text-right">{{ c.utilization }}</span>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% if risk_eval.warnings and not risk_eval.blocked %}
+    <p class="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mt-3">
+        Caution-mode breaches don't block — the trade was accepted. Adjust enforcement at <a href="/settings/risk" class="underline">/settings/risk</a> if you want hard blocks.
+    </p>
+    {% endif %}
+</section>

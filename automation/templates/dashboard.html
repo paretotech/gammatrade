@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block page_meta %}
+<span class="text-stone-500 text-sm">{{ today.date }}</span>
+{% endblock %}
+
+{% block content %}
+
+<!-- KPI strip -->
+<div class="grid grid-cols-4 gap-3 mb-8">
+    <div class="card bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Realized P&L</div>
+        <div class="mono text-2xl mt-1.5 font-semibold {% if today.realized_pnl >= 0 %}text-emerald-700{% else %}text-red-700{% endif %}">
+            {{ today.realized_pnl | money }}
+        </div>
+    </div>
+    <div class="card bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Unrealized</div>
+        <div class="mono text-2xl mt-1.5 font-semibold {% if today.unrealized_pnl >= 0 %}text-stone-900{% else %}text-red-700{% endif %}">
+            {{ today.unrealized_pnl | money }}
+        </div>
+    </div>
+    <div class="card bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Open positions</div>
+        <div class="mono text-2xl mt-1.5 font-semibold text-stone-900">{{ open_count }}</div>
+    </div>
+    <div class="card bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Entries today</div>
+        <div class="mono text-2xl mt-1.5 font-semibold text-stone-900">{{ today.new_entries }}</div>
+    </div>
+</div>
+
+<!-- Discipline strip -->
+<div class="bg-white border border-stone-200 rounded-lg p-4 mb-8">
+    <div class="flex items-center justify-between">
+        <div>
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-1.5">Discipline today</div>
+            <div class="flex gap-6 mt-1">
+                <div>
+                    <span class="mono text-lg font-semibold {% if today.panic_cuts == 0 %}text-emerald-700{% else %}text-red-700{% endif %}">{{ today.panic_cuts }}</span>
+                    <span class="text-sm text-stone-600 ml-1.5">panic cuts</span>
+                </div>
+                <div>
+                    <span class="mono text-lg font-semibold {% if today.discipline_violations == 0 %}text-emerald-700{% else %}text-amber-700{% endif %}">{{ today.discipline_violations }}</span>
+                    <span class="text-sm text-stone-600 ml-1.5">violations</span>
+                </div>
+                <div>
+                    <span class="mono text-lg font-semibold text-stone-900">{{ today.tp1_fires + today.tp2_fires + today.tp3_fires }}</span>
+                    <span class="text-sm text-stone-600 ml-1.5">TP fires</span>
+                </div>
+                <div>
+                    <span class="mono text-lg font-semibold text-stone-900">{{ today.be_stop_fires }}</span>
+                    <span class="text-sm text-stone-600 ml-1.5">BE stops</span>
+                </div>
+            </div>
+        </div>
+        <a href="/entries/new" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">+ New entry</a>
+    </div>
+</div>
+
+<!-- Waiting triggers -->
+{% if waiting_triggers %}
+<section class="mb-10">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Waiting triggers ({{ waiting_triggers|length }})</h2>
+        <a href="/pregame" class="text-xs text-stone-500 hover:text-stone-900">From pregame →</a>
+    </div>
+    <div class="space-y-2">
+        {% for t in waiting_triggers %}
+        <div class="bg-white border border-stone-200 rounded-lg px-4 py-3 flex items-center justify-between text-sm">
+            <div class="flex items-center gap-4 flex-1">
+                <div class="mono font-medium w-32">{{ t.ticker }} {{ t.expiry }} {{ t.strike|int }}{{ t.right }}</div>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for s in t._statuses %}
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px]
+                        {% if s.met is true %}bg-emerald-50 text-emerald-700
+                        {% elif s.met is false %}bg-stone-100 text-stone-600
+                        {% else %}bg-stone-50 text-stone-400{% endif %}">
+                        {% if s.met is true %}✓{% elif s.met is false %}·{% else %}?{% endif %}
+                        <span class="mono">{{ s.ticker }}</span>
+                        <span>
+                            {% if s.direction == 'hold_above' %}hold≥
+                            {% elif s.direction == 'hold_below' %}hold≤
+                            {% elif s.direction == 'bounce_above' %}bnc↑
+                            {% elif s.direction == 'bounce_below' %}bnc↓
+                            {% elif s.direction == 'below' %}≤
+                            {% else %}≥{% endif %}
+                        </span>
+                        <span class="mono">{{ "%g"|format(s.level) }}</span>
+                        {% if s.current is not none %}<span class="text-stone-400 mono">@{{ "%.2f"|format(s.current) }}</span>{% endif %}
+                    </span>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="text-stone-500 text-[11px] mono">{{ t.created_at[11:16] }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<!-- Open positions -->
+<section class="mb-10">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Open positions</h2>
+        <span class="text-xs text-stone-500">click row for detail + simulator</span>
+    </div>
+
+    {% if positions %}
+    <div class="space-y-2.5">
+        {% for p in positions %}
+        <a href="/positions/{{ p.intent_id }}" class="block bg-white border border-stone-200 rounded-lg p-4 card hover:border-stone-300 transition-colors">
+            <!-- Header line -->
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-3 min-w-0">
+                    <div class="font-medium mono">{{ p.ticker }} {{ p.expiry }} {{ p.strike|int }}{{ p.right }}</div>
+                    <span class="inline-block px-1.5 py-0.5 rounded text-[11px] bg-stone-100 text-stone-700">{{ p.chain_role }}</span>
+                    <span class="text-[11px] text-stone-500">{{ p.regime_tag }} · {{ p.sector }}</span>
+                </div>
+                <div class="flex items-center gap-6 text-right shrink-0">
+                    <div>
+                        <div class="text-[10px] uppercase tracking-wider text-stone-400">Entry</div>
+                        <div class="mono text-sm">${{ "%.2f"|format(p.avg_entry_price) }}</div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] uppercase tracking-wider text-stone-400">Residual / Filled</div>
+                        <div class="mono text-sm">{{ p.entry_qty - p.exit_qty }} / {{ p.entry_qty }}</div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] uppercase tracking-wider text-stone-400">Capital</div>
+                        <div class="mono text-sm">${{ "{:,.0f}".format(p.avg_entry_price * (p.entry_qty - p.exit_qty) * 100) }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TP fill row -->
+            <div class="grid grid-cols-3 gap-2">
+                {% for tp in p.tp_status %}
+                <div class="rounded-md px-3 py-2 text-[12px]
+                    {% if tp.state == 'filled' %}bg-emerald-50 border border-emerald-200
+                    {% elif tp.state == 'pending' %}bg-stone-50 border border-stone-200
+                    {% elif tp.state == 'canceled' %}bg-red-50 border border-red-100
+                    {% else %}bg-stone-50 border border-stone-100{% endif %}">
+                    <div class="flex items-center justify-between">
+                        <span class="mono font-semibold
+                            {% if tp.state == 'filled' %}text-emerald-700
+                            {% elif tp.state == 'canceled' %}text-red-700
+                            {% else %}text-stone-700{% endif %}">TP{{ tp.tier }}</span>
+                        {% if tp.state == 'filled' %}
+                            <span class="text-[10px] uppercase tracking-wider text-emerald-700">✓ filled</span>
+                        {% elif tp.state == 'pending' %}
+                            <span class="text-[10px] uppercase tracking-wider text-stone-500">pending</span>
+                        {% elif tp.state == 'canceled' %}
+                            <span class="text-[10px] uppercase tracking-wider text-red-600">canceled</span>
+                        {% else %}
+                            <span class="text-[10px] uppercase tracking-wider text-stone-400">—</span>
+                        {% endif %}
+                    </div>
+
+                    {% if tp.state == 'filled' %}
+                    <div class="flex items-baseline gap-2 mt-1">
+                        <span class="mono font-medium">${{ "%.2f"|format(tp.price) }}</span>
+                        <span class="mono text-emerald-700">{{ "%+.0f"|format(tp.roi * 100) }}%</span>
+                        <span class="mono text-emerald-700 ml-auto">{{ tp.profit | money }}</span>
+                    </div>
+                    <div class="text-[10px] text-stone-500 mt-0.5">qty {{ tp.qty }}{% if tp.target %} · target ${{ "%.2f"|format(tp.target) }}{% endif %}</div>
+                    {% elif tp.state == 'pending' %}
+                    <div class="mono text-stone-700 mt-1">target ${{ "%.2f"|format(tp.target) }}</div>
+                    <div class="text-[10px] text-stone-500 mt-0.5">qty {{ tp.qty }}</div>
+                    {% elif tp.state == 'canceled' %}
+                    <div class="mono text-stone-500 line-through mt-1">${{ "%.2f"|format(tp.target) }}</div>
+                    {% else %}
+                    <div class="text-[11px] text-stone-400 italic mt-1">not in ladder</div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-white border border-stone-200 rounded-lg p-8 text-center text-stone-500 text-sm">
+        No open positions.
+    </div>
+    {% endif %}
+</section>
+
+<!-- Active chains -->
+{% if chains %}
+<section class="mb-10">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Active chains</h2>
+        <a href="/chains" class="text-xs text-stone-500 hover:text-stone-900">View all →</a>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+                <tr>
+                    <th class="text-left px-4 py-2.5 font-medium">Chain</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Ticker</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Started</th>
+                    <th class="text-right px-4 py-2.5 font-medium">Realized</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for c in chains %}
+                <tr class="hover:bg-stone-50">
+                    <td class="px-4 py-3 mono text-stone-500 text-[12px]">{{ c.chain_id[:8] }}</td>
+                    <td class="px-4 py-3 font-medium">{{ c.ticker }}</td>
+                    <td class="px-4 py-3 text-stone-600">{{ c.started_at[:16] }}</td>
+                    <td class="px-4 py-3 text-right mono">{{ (c.cumulative_realized or 0) | money }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+{% endblock %}

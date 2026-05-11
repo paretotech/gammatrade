@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+<!-- Headline cards -->
+<div class="grid grid-cols-4 gap-3 mb-6">
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 mb-1">Today</div>
+        <div class="mono text-2xl {% if summary.today > 0 %}text-emerald-700{% elif summary.today < 0 %}text-red-700{% else %}text-stone-700{% endif %}">
+            {% if summary.today >= 0 %}+{% endif %}${{ "%.0f"|format(summary.today) }}
+        </div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 mb-1">This week</div>
+        <div class="mono text-2xl {% if summary.week > 0 %}text-emerald-700{% elif summary.week < 0 %}text-red-700{% else %}text-stone-700{% endif %}">
+            {% if summary.week >= 0 %}+{% endif %}${{ "%.0f"|format(summary.week) }}
+        </div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 mb-1">This month</div>
+        <div class="mono text-2xl {% if summary.month > 0 %}text-emerald-700{% elif summary.month < 0 %}text-red-700{% else %}text-stone-700{% endif %}">
+            {% if summary.month >= 0 %}+{% endif %}${{ "%.0f"|format(summary.month) }}
+        </div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 mb-1">All time</div>
+        <div class="mono text-2xl {% if summary.all_time > 0 %}text-emerald-700{% elif summary.all_time < 0 %}text-red-700{% else %}text-stone-700{% endif %}">
+            {% if summary.all_time >= 0 %}+{% endif %}${{ "%.0f"|format(summary.all_time) }}
+        </div>
+    </div>
+</div>
+
+<!-- Win/loss + median ROI strip -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6">
+    <div class="flex items-baseline justify-between mb-4">
+        <h2 class="text-[15px] font-semibold text-stone-700">{{ summary.trades_total }} closed trade{{ '' if summary.trades_total == 1 else 's' }}</h2>
+        <div class="flex items-center gap-4 text-sm">
+            <span class="text-stone-500">Win rate</span>
+            <span class="mono font-medium">{{ summary.win_rate }}%</span>
+            <span class="text-stone-300">·</span>
+            <span class="text-stone-500">Median ROI</span>
+            <span class="mono font-medium {% if summary.median_roi_pct > 0 %}text-emerald-700{% elif summary.median_roi_pct < 0 %}text-red-700{% endif %}">
+                {% if summary.median_roi_pct >= 0 %}+{% endif %}{{ summary.median_roi_pct }}%
+            </span>
+        </div>
+    </div>
+    <div class="flex h-2 rounded-full overflow-hidden bg-stone-100">
+        {% if summary.trades_total > 0 %}
+        <div class="bg-emerald-500" style="width: {{ summary.win_rate }}%"></div>
+        <div class="bg-red-400" style="width: {{ 100 - summary.win_rate }}%"></div>
+        {% endif %}
+    </div>
+    <div class="flex justify-between text-[11px] text-stone-500 mt-1.5">
+        <span>{{ summary.wins }} win{{ '' if summary.wins == 1 else 's' }}</span>
+        <span>{{ summary.losses }} loss{{ 'es' if summary.losses != 1 else '' }}</span>
+    </div>
+</div>
+
+<!-- Advanced metrics — 3-column grid: trade quality / extremes & streaks / TP & chain -->
+{% if advanced and not advanced.empty %}
+<div class="grid grid-cols-3 gap-3 mb-6">
+
+    <!-- Trade quality -->
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-semibold mb-3">Trade quality</div>
+        <dl class="divide-y divide-stone-100 text-sm">
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Avg winner</dt>
+                <dd class="mono text-emerald-700 font-medium">+${{ "{:,.0f}".format(advanced.avg_winner) }}</dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Avg loser</dt>
+                <dd class="mono text-red-700 font-medium">-${{ "{:,.0f}".format(advanced.avg_loser|abs) }}</dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Median winner</dt>
+                <dd class="mono text-emerald-700">+${{ "{:,.0f}".format(advanced.med_winner) }}</dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Median loser</dt>
+                <dd class="mono text-red-700">-${{ "{:,.0f}".format(advanced.med_loser|abs) }}</dd>
+            </div>
+            <div class="flex justify-between py-1.5"
+                 title="Sum of wins divided by sum of losses. >1 means net profitable; >2 is very strong.">
+                <dt class="text-stone-600">Profit factor</dt>
+                <dd class="mono font-semibold {% if advanced.profit_factor and advanced.profit_factor > 1 %}text-emerald-700{% elif advanced.profit_factor and advanced.profit_factor < 1 %}text-red-700{% endif %}">
+                    {% if advanced.profit_factor is none %}∞{% else %}{{ advanced.profit_factor }}{% endif %}
+                </dd>
+            </div>
+            <div class="flex justify-between py-1.5" title="Avg winner ÷ |avg loser|">
+                <dt class="text-stone-600">Reward / risk</dt>
+                <dd class="mono">{% if advanced.reward_risk is none %}—{% else %}{{ advanced.reward_risk }}{% endif %}</dd>
+            </div>
+            <div class="flex justify-between py-1.5"
+                 title="Expected $ per trade. (p_win × avg_win) + (p_loss × avg_loss)">
+                <dt class="text-stone-600">Expectancy / trade</dt>
+                <dd class="mono font-semibold {% if advanced.expectancy > 0 %}text-emerald-700{% elif advanced.expectancy < 0 %}text-red-700{% endif %}">
+                    {% if advanced.expectancy >= 0 %}+{% endif %}${{ "{:,.0f}".format(advanced.expectancy) }}
+                </dd>
+            </div>
+        </dl>
+    </div>
+
+    <!-- Extremes & Streaks -->
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-semibold mb-3">Extremes & streaks</div>
+        <dl class="divide-y divide-stone-100 text-sm">
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Largest win</dt>
+                <dd class="mono text-emerald-700 font-medium">+${{ "{:,.0f}".format(advanced.largest_win) }}</dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Largest loss</dt>
+                <dd class="mono text-red-700 font-medium">-${{ "{:,.0f}".format(advanced.largest_loss|abs) }}</dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Best day</dt>
+                <dd class="text-right">
+                    <span class="mono text-emerald-700 font-medium">+${{ "{:,.0f}".format(advanced.best_day_pnl) }}</span>
+                    <span class="text-stone-500 text-[11px] ml-1">{{ advanced.best_day }}</span>
+                </dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Worst day</dt>
+                <dd class="text-right">
+                    <span class="mono text-red-700 font-medium">-${{ "{:,.0f}".format(advanced.worst_day_pnl|abs) }}</span>
+                    <span class="text-stone-500 text-[11px] ml-1">{{ advanced.worst_day }}</span>
+                </dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Current streak</dt>
+                <dd class="mono font-medium {% if advanced.current_streak_type == 'W' %}text-emerald-700{% elif advanced.current_streak_type == 'L' %}text-red-700{% endif %}">
+                    {% if advanced.current_streak_type %}{{ advanced.current_streak_type }}{{ advanced.current_streak_len }}{% else %}—{% endif %}
+                </dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Max win streak</dt>
+                <dd class="mono">{{ advanced.max_win_streak }}</dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Max loss streak</dt>
+                <dd class="mono">{{ advanced.max_loss_streak }}</dd>
+            </div>
+            <div class="flex justify-between py-1.5"
+                 title="What % of total P&L came from the top 10 trades. High = concentration risk.">
+                <dt class="text-stone-600">Top-10 trade $</dt>
+                <dd class="mono">{{ advanced.top10_pct }}%</dd>
+            </div>
+        </dl>
+    </div>
+
+    <!-- TP & Chain -->
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-semibold mb-3">TP &amp; chain</div>
+        <dl class="divide-y divide-stone-100 text-sm">
+            <div class="flex justify-between py-1.5" title="% of trades that reached a profitable TP1 fill">
+                <dt class="text-stone-600">TP1 hit rate</dt>
+                <dd class="text-right">
+                    <div class="inline-flex items-center gap-2">
+                        <div class="w-16 h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                            <div class="bg-emerald-500 h-full" style="width: {{ advanced.tp1_rate }}%"></div>
+                        </div>
+                        <span class="mono">{{ advanced.tp1_rate }}%</span>
+                    </div>
+                </dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">TP2 hit rate</dt>
+                <dd class="text-right">
+                    <div class="inline-flex items-center gap-2">
+                        <div class="w-16 h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                            <div class="bg-emerald-500 h-full" style="width: {{ advanced.tp2_rate }}%"></div>
+                        </div>
+                        <span class="mono">{{ advanced.tp2_rate }}%</span>
+                    </div>
+                </dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">TP3 hit rate</dt>
+                <dd class="text-right">
+                    <div class="inline-flex items-center gap-2">
+                        <div class="w-16 h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                            <div class="bg-emerald-500 h-full" style="width: {{ advanced.tp3_rate }}%"></div>
+                        </div>
+                        <span class="mono">{{ advanced.tp3_rate }}%</span>
+                    </div>
+                </dd>
+            </div>
+            <div class="flex justify-between py-1.5"
+                 title="% of trades opened as R2/R3 chain legs (rolls after a TP fired)">
+                <dt class="text-stone-600">Chain rate</dt>
+                <dd class="mono">{{ advanced.chain_rate }}% <span class="text-stone-500 text-[11px]">({{ advanced.chain_legs }})</span></dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Chain $</dt>
+                <dd class="mono {% if advanced.chain_pnl > 0 %}text-emerald-700{% elif advanced.chain_pnl < 0 %}text-red-700{% endif %}">
+                    {% if advanced.chain_pnl == 0 %}—{% else %}{% if advanced.chain_pnl >= 0 %}+{% endif %}${{ "{:,.0f}".format(advanced.chain_pnl) }}{% endif %}
+                </dd>
+            </div>
+            <div class="flex justify-between py-1.5">
+                <dt class="text-stone-600">Trades / day</dt>
+                <dd class="mono">{{ advanced.trades_per_day }} <span class="text-stone-500 text-[11px]">({{ advanced.n_days }}d)</span></dd>
+            </div>
+            <div class="flex justify-between py-1.5"
+                 title="Days with 2+ losers — kill-switch close-call count (per data-derived)">
+                <dt class="text-stone-600">2+ loss days</dt>
+                <dd class="mono {% if advanced.days_with_2plus_losses > 0 %}text-amber-700{% endif %}">{{ advanced.days_with_2plus_losses }}</dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{% endif %}
+
+<!-- Monthly calendar — Notion-style: light bg, no color blocks, color via text only -->
+{% if calendar %}
+<div class="mb-8">
+    <div class="flex items-center justify-between mb-4 px-1">
+        <div class="flex items-center gap-1">
+            <a href="/analytics/pnl?range={{ range_key }}&month={{ calendar.prev_month }}"
+               class="w-7 h-7 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors">‹</a>
+            <h2 class="text-[20px] font-semibold tracking-tight text-stone-900 px-2">{{ calendar.label }}</h2>
+            <a href="/analytics/pnl?range={{ range_key }}&month={{ calendar.next_month }}"
+               class="w-7 h-7 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors">›</a>
+        </div>
+        <div class="flex items-center gap-3 text-[12px] text-stone-500">
+            <span>{{ calendar.month_trades }} trades</span>
+            <span class="text-stone-300">·</span>
+            <span class="font-semibold text-stone-900 mono {% if calendar.month_total > 0 %}text-emerald-700{% elif calendar.month_total < 0 %}text-red-700{% endif %}">
+                {% if calendar.month_total >= 0 %}+{% endif %}${{ "{:,.0f}".format(calendar.month_total) }}
+            </span>
+            <span class="text-stone-300">·</span>
+            <span>{{ calendar.month_win_rate }}% win rate</span>
+        </div>
+    </div>
+
+    <div class="grid border-t border-l border-stone-200"
+         style="grid-template-columns: repeat(7, minmax(0,1fr)) 108px;">
+        {# day-of-week headers #}
+        {% for dn in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'] %}
+        <div class="text-[11px] text-stone-500 text-center py-2 border-r border-b border-stone-200 bg-stone-50/40 font-medium">{{ dn }}</div>
+        {% endfor %}
+        <div class="text-[11px] text-stone-500 text-center py-2 border-r border-b border-stone-200 bg-stone-50/40 font-medium">Week</div>
+
+        {# week rows #}
+        {% for week in calendar.weeks %}
+            {% for day in week %}
+                {% if day is none %}
+                <div class="border-r border-b border-stone-200 bg-stone-50/30 min-h-[88px]"></div>
+                {% elif not day.has_data %}
+                <div class="border-r border-b border-stone-200 bg-white min-h-[88px] p-2.5">
+                    <div class="text-[12px] text-stone-400 mono">{{ day.day }}</div>
+                </div>
+                {% else %}
+                <div class="border-r border-b border-stone-200 transition-colors min-h-[88px] p-2.5 flex flex-col
+                            {% if day.pnl > 0 %}bg-emerald-50/70 hover:bg-emerald-100/70
+                            {% elif day.pnl < 0 %}bg-red-50/70 hover:bg-red-100/70
+                            {% else %}bg-white hover:bg-stone-50{% endif %}">
+                    <div class="text-[12px] text-stone-500 mono">{{ day.day }}</div>
+                    <div class="mono font-semibold text-[15px] mt-1 leading-tight
+                                {% if day.pnl > 0 %}text-emerald-700
+                                {% elif day.pnl < 0 %}text-red-700
+                                {% else %}text-stone-500{% endif %}">
+                        {% if day.pnl >= 0 %}+{% endif %}${{ "{:,.0f}".format(day.pnl|abs) if day.pnl < 0 else "{:,.0f}".format(day.pnl) }}
+                    </div>
+                    <div class="text-[11px] text-stone-500 mt-auto">
+                        {{ day.n_trades }} trade{{ '' if day.n_trades == 1 else 's' }}{% if day.win_rate is not none %} · {{ day.win_rate|int }}%{% endif %}
+                    </div>
+                </div>
+                {% endif %}
+            {% endfor %}
+
+            {# Week summary cell — translucent tint matching week's net P&L #}
+            {% set wt = calendar.week_totals[loop.index0] %}
+            <div class="border-r border-b border-stone-200 px-3 py-2.5 min-h-[88px] flex flex-col justify-center
+                        {% if wt.pnl > 0 %}bg-emerald-50/80
+                        {% elif wt.pnl < 0 %}bg-red-50/80
+                        {% else %}bg-stone-50/60{% endif %}
+                        {% if wt.n_days == 0 %}opacity-50{% endif %}">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium">{{ wt.label }}</div>
+                <div class="mono font-semibold text-[15px] mt-1 leading-tight
+                            {% if wt.pnl > 0 %}text-emerald-700{% elif wt.pnl < 0 %}text-red-700{% else %}text-stone-400{% endif %}">
+                    {% if wt.pnl >= 0 %}+{% endif %}${{ "{:,.0f}".format(wt.pnl) }}
+                </div>
+                {% if wt.n_days > 0 %}
+                <div class="text-[11px] text-stone-500 mt-1">{{ wt.n_days }}d · {{ wt.n_trades }}t</div>
+                {% endif %}
+            </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Cumulative P&L sparkline -->
+<div class="bg-white border border-stone-200 rounded-lg p-5">
+    <div class="flex items-baseline justify-between mb-4">
+        <h2 class="text-[15px] font-semibold text-stone-700">Cumulative P&L · last 30 days</h2>
+        <span class="text-[11px] text-stone-500">{{ series|length }} trading-day buckets</span>
+    </div>
+
+    {% if series %}
+    {% set max_cum = series | map(attribute='cumulative') | max %}
+    {% set min_cum = series | map(attribute='cumulative') | min %}
+    {% set range_cum = (max_cum - min_cum) if (max_cum - min_cum) > 0 else 1 %}
+    <svg viewBox="0 0 {{ series|length * 20 }} 80" class="w-full h-24" preserveAspectRatio="none">
+        {# Zero line #}
+        {% set zero_y = 80 - ((0 - min_cum) / range_cum * 80) %}
+        <line x1="0" y1="{{ zero_y }}" x2="{{ series|length * 20 }}" y2="{{ zero_y }}"
+              stroke="#d6d3d1" stroke-dasharray="2 2" stroke-width="0.5"></line>
+
+        {# Cumulative line #}
+        <polyline fill="none" stroke="#059669" stroke-width="1.5"
+            points="{% for p in series %}{{ loop.index0 * 20 + 10 }},{{ 80 - ((p.cumulative - min_cum) / range_cum * 80) }} {% endfor %}" />
+
+        {# Daily bars (subtle) #}
+        {% for p in series %}
+            {% if p.pnl != 0 %}
+            <rect x="{{ loop.index0 * 20 + 6 }}" y="{{ zero_y if p.pnl > 0 else zero_y }}"
+                  width="8" height="{{ (p.pnl|abs) / range_cum * 80 }}"
+                  transform="{% if p.pnl < 0 %}translate(0, 0){% else %}translate(0, -{{ (p.pnl|abs) / range_cum * 80 }}){% endif %}"
+                  fill="{% if p.pnl > 0 %}#10b98133{% else %}#ef444433{% endif %}"></rect>
+            {% endif %}
+        {% endfor %}
+    </svg>
+    <div class="flex justify-between text-[11px] mono text-stone-500 mt-2">
+        <span>{{ series[0].date }}</span>
+        <span>min ${{ "%.0f"|format(min_cum) }} · max ${{ "%.0f"|format(max_cum) }}</span>
+        <span>{{ series[-1].date }}</span>
+    </div>
+    {% else %}
+    <p class="text-sm text-stone-500 text-center py-8">No closed trades yet.</p>
+    {% endif %}
+</div>
+
+{% endblock %}

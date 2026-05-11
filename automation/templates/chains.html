@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-2xl">
+    A chain is R1 → R2 → R3 sequenced trades on the same ticker, where each
+    roll is funded by retained profit from the prior leg. Chain rolls don't
+    count against the daily entry cap.
+</p>
+
+{% if chains %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+            <tr>
+                <th class="text-left px-4 py-2.5 font-medium">Chain</th>
+                <th class="text-left px-4 py-2.5 font-medium">Ticker</th>
+                <th class="text-left px-4 py-2.5 font-medium">Started</th>
+                <th class="text-left px-4 py-2.5 font-medium">R1</th>
+                <th class="text-left px-4 py-2.5 font-medium">R2</th>
+                <th class="text-left px-4 py-2.5 font-medium">R3</th>
+                <th class="text-right px-4 py-2.5 font-medium">Realized</th>
+                <th class="text-left px-4 py-2.5 font-medium">Status</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for c in chains %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-4 py-3 mono text-stone-500 text-[12px]">{{ c.chain_id[:8] }}</td>
+                <td class="px-4 py-3 font-medium">{{ c.ticker }}</td>
+                <td class="px-4 py-3 text-stone-600 text-[12px] mono">{{ c.started_at[:16] }}</td>
+                <td class="px-4 py-3">
+                    {% if c.r1_intent_id %}
+                    <span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+                    {% else %}
+                    <span class="inline-block w-2 h-2 rounded-full bg-stone-200"></span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if c.r2_intent_id %}
+                    <span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+                    {% else %}
+                    <span class="inline-block w-2 h-2 rounded-full bg-stone-200"></span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if c.r3_intent_id %}
+                    <span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+                    {% else %}
+                    <span class="inline-block w-2 h-2 rounded-full bg-stone-200"></span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 text-right mono">{{ (c.cumulative_realized or 0) | money }}</td>
+                <td class="px-4 py-3">
+                    <span class="inline-block px-1.5 py-0.5 rounded text-[11px] bg-emerald-50 text-emerald-700">{{ c.status }}</span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="bg-white border border-stone-200 rounded-lg p-8 text-center text-stone-500 text-sm">No active chains.</div>
+{% endif %}
+
+{% endblock %}

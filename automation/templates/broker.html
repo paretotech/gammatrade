@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_settings_tabs.html" %}
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-2xl">
+    Connection to IBKR Gateway. Switch backends via the <span class="mono">BROKER</span> environment
+    variable: <span class="mono">mock</span> (default), <span class="mono">ibkr_paper</span>
+    (port 7497), or <span class="mono">ibkr_live</span> (port 7496 — ⚠).
+</p>
+
+{% if broker.mode == 'live' %}
+<div class="bg-red-50 border-2 border-red-300 rounded-lg p-4 mb-6 max-w-3xl">
+    <div class="flex items-start gap-3">
+        <div class="text-red-700 text-xl shrink-0">⚠</div>
+        <div class="flex-1">
+            <div class="font-semibold text-red-900 mb-1">Live account selected (BROKER=ibkr_live)</div>
+            <div class="text-[13px] text-red-800 leading-relaxed">
+                {% if broker.readonly %}
+                <span class="font-medium">Read-only mode is ON</span> — broker refuses all order placement (defense in depth: ib_insync protocol-level + our own guard). Safe for connection setup.
+                {% else %}
+                <span class="font-medium">Read-only mode is OFF</span> — orders, once Phase 1+ is wired, will fire against the live account with real money.
+                {% endif %}
+                Switch to a paper account before flipping read-only off.
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Status card -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6 max-w-3xl">
+    <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-3">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Status</div>
+            {% if broker.backend == 'mock' %}
+            <span class="inline-flex items-center gap-1.5 text-stone-600 text-sm">
+                <span class="w-1.5 h-1.5 rounded-full bg-stone-400"></span>Mock (no broker)
+            </span>
+            {% elif broker.connected %}
+            <span class="inline-flex items-center gap-1.5 text-emerald-700 text-sm font-medium">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Connected
+            </span>
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 text-red-700 text-sm font-medium">
+                <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Disconnected
+            </span>
+            {% endif %}
+            {% if broker.backend == 'ibkr' %}
+                {% if broker.readonly %}
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] uppercase tracking-wider bg-stone-100 text-stone-700 font-medium">🔒 read-only</span>
+                {% else %}
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] uppercase tracking-wider bg-amber-100 text-amber-800 font-medium">⚠ writable</span>
+                {% endif %}
+            {% endif %}
+        </div>
+        {% if broker.backend != 'mock' %}
+        <form method="post" action="/settings/broker/reconnect">
+            <button class="text-[11px] px-3 py-1.5 rounded bg-stone-900 hover:bg-stone-700 text-white font-medium">↻ Reconnect</button>
+        </form>
+        {% endif %}
+    </div>
+
+    <div class="grid grid-cols-2 gap-y-2.5 gap-x-8 text-sm">
+        <div>
+            <span class="text-stone-500">Backend</span>
+            <div class="mono mt-0.5">{{ broker.backend }}</div>
+        </div>
+        <div>
+            <span class="text-stone-500">Mode</span>
+            <div class="mt-0.5">
+                {% if broker.mode == 'live' %}
+                <span class="text-red-700 font-medium">LIVE ⚠</span>
+                {% elif broker.mode == 'paper' %}
+                <span class="text-emerald-700 font-medium">paper</span>
+                {% else %}
+                {{ broker.mode }}
+                {% endif %}
+            </div>
+        </div>
+        {% if broker.host %}
+        <div>
+            <span class="text-stone-500">Host : Port</span>
+            <div class="mono mt-0.5">{{ broker.host }}:{{ broker.port }}</div>
+        </div>
+        <div>
+            <span class="text-stone-500">Client ID</span>
+            <div class="mono mt-0.5">{{ broker.client_id }}</div>
+        </div>
+        {% endif %}
+        {% if broker.account_id %}
+        <div>
+            <span class="text-stone-500">Account</span>
+            <div class="mono mt-0.5">{{ broker.account_id }}</div>
+        </div>
+        {% endif %}
+        {% if broker.last_attempt_ts %}
+        <div>
+            <span class="text-stone-500">Last attempt</span>
+            <div class="mono mt-0.5 text-[12px]">{{ broker.last_attempt_ts[:19] }} UTC</div>
+        </div>
+        {% endif %}
+        {% if broker.buying_power is not none %}
+        <div>
+            <span class="text-stone-500">Buying power</span>
+            <div class="mono mt-0.5">${{ "{:,.0f}".format(broker.buying_power) }}</div>
+        </div>
+        {% endif %}
+        {% if broker.net_liquidation is not none %}
+        <div>
+            <span class="text-stone-500">Net liquidation</span>
+            <div class="mono mt-0.5">${{ "{:,.0f}".format(broker.net_liquidation) }}</div>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if broker.connected and broker.backend == 'ibkr' %}
+    <div class="mt-4 pt-3 border-t border-stone-100">
+        <a href="/settings/broker/dryrun"
+           class="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-medium border border-emerald-200">
+            🧪 Run dry-run order →
+        </a>
+        <span class="text-[11px] text-stone-500 ml-2">Validate contract resolution + order construction without placing</span>
+    </div>
+    {% endif %}
+
+    {% if broker.last_error %}
+    <div class="mt-4 pt-3 border-t border-stone-100">
+        <div class="text-[11px] uppercase tracking-wider text-red-700 font-medium mb-1">Last error</div>
+        <div class="text-[12px] mono text-red-900 leading-relaxed">{{ broker.last_error }}</div>
+    </div>
+    {% endif %}
+
+    <div class="mt-4 pt-3 border-t border-stone-100 text-[11px] text-stone-500">
+        BROKER env: <span class="mono font-medium">{{ broker_env }}</span>
+        {% if broker_env == 'mock' %}
+        — restart server with <span class="mono">BROKER=ibkr_paper</span> to connect to Gateway
+        {% endif %}
+    </div>
+</div>
+
+<!-- Setup instructions -->
+<div class="bg-white border border-stone-200 rounded-lg p-5 max-w-3xl">
+    <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Gateway setup (paper account)</div>
+
+    <ol class="text-sm text-stone-700 space-y-3 leading-relaxed">
+        <li class="flex gap-3">
+            <span class="text-stone-400 mono shrink-0">1.</span>
+            <div>
+                <span class="font-medium">Download IB Gateway</span> from
+                <a href="https://www.interactivebrokers.com/en/trading/ibgateway-stable.php" target="_blank" rel="noopener"
+                   class="text-emerald-700 hover:underline">interactivebrokers.com</a>
+                — pick the stable build for your OS. Lighter than TWS (~150MB).
+            </div>
+        </li>
+        <li class="flex gap-3">
+            <span class="text-stone-400 mono shrink-0">2.</span>
+            <div>
+                <span class="font-medium">Launch Gateway, log in to your paper account.</span>
+                Pick <span class="mono">IB API</span> mode (not FIX) on the login screen.
+                The 2FA push will hit your IBKR Mobile app.
+            </div>
+        </li>
+        <li class="flex gap-3">
+            <span class="text-stone-400 mono shrink-0">3.</span>
+            <div>
+                <span class="font-medium">Enable the API in</span>
+                <span class="mono text-[12px]">Configuration → Settings → API → Settings</span>:
+                <ul class="mt-1 space-y-0.5 text-[12px] text-stone-600 list-disc list-inside ml-2">
+                    <li><span class="mono">Enable ActiveX and Socket Clients</span> ✓</li>
+                    <li><span class="mono">Read-Only API</span> — <span class="font-medium">unchecked</span> (we need to place orders)</li>
+                    <li><span class="mono">Socket port</span>: <span class="mono">7497</span> (paper)</li>
+                    <li><span class="mono">Trusted IPs</span>: add <span class="mono">127.0.0.1</span></li>
+                    <li><span class="mono">Allow connections from localhost only</span> ✓</li>
+                </ul>
+            </div>
+        </li>
+        <li class="flex gap-3">
+            <span class="text-stone-400 mono shrink-0">4.</span>
+            <div>
+                <span class="font-medium">Restart this server with the right env vars.</span>
+                <span class="mono text-[12px]">BROKER_READONLY=1</span> is the default (broker refuses orders) — keep it ON until you're ready to actually trade.
+                <pre class="bg-stone-100 rounded px-3 py-2 mt-1.5 text-[12px] mono leading-relaxed overflow-x-auto">pkill -f "automation.server"
+# Paper account (port 7497):
+export BROKER=ibkr_paper
+# OR live account during setup (port 7496) — read-only stays ON:
+export BROKER=ibkr_live
+python3 -m automation.server</pre>
+                <span class="text-[11px] text-stone-500">Live setup is safe in read-only mode — Gateway won't accept orders even if buggy code tries.</span>
+            </div>
+        </li>
+        <li class="flex gap-3">
+            <span class="text-stone-400 mono shrink-0">5.</span>
+            <div>
+                <span class="font-medium">Refresh this page.</span>
+                Status flips to "Connected" with your paper account ID.
+                If not, check the Last error section above and Gateway's API logs.
+            </div>
+        </li>
+    </ol>
+
+    <div class="mt-5 pt-4 border-t border-stone-100 text-[11px] text-stone-500 leading-relaxed">
+        <span class="font-medium">Daily 2FA:</span> IBKR forces fresh login every ~24h. Keep Gateway running between sessions; on 2FA prompt accept the IBKR Mobile push. Server stays up — Gateway reconnect is transparent. Hit Reconnect above if the connection wedges.
+    </div>
+</div>
+
+{% endblock %}

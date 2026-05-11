@@ -1,0 +1,14 @@
+{# Inputs:
+   - range_key: current selection (today | week | month | 90d | all)
+   - tab_slug: the active tab slug (used to build the link target)
+#}
+<div class="flex items-center gap-1.5 mb-4">
+    <span class="text-[11px] uppercase tracking-wider text-stone-500 mr-1">Range</span>
+    {% for key, label in [('today','Today'),('week','Week'),('month','Month'),('90d','90d'),('all','All')] %}
+    <a href="/analytics/{{ tab_slug }}?range={{ key }}{% if bucket_minutes %}&bucket={{ bucket_minutes }}{% endif %}"
+       class="text-[11px] mono px-2 py-1 rounded transition-colors
+              {% if range_key == key %}bg-emerald-600 text-white{% else %}bg-stone-100 hover:bg-stone-200 text-stone-700{% endif %}">
+        {{ label }}
+    </a>
+    {% endfor %}
+</div>

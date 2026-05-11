@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden"
+     x-data='{
+        rows: {{ rows | tojson }},
+        sortKey: "total_pnl",
+        sortDir: -1,
+        sort(key) {
+            if (this.sortKey === key) { this.sortDir = -this.sortDir; }
+            else { this.sortKey = key; this.sortDir = -1; }
+            this.rows.sort((a, b) => {
+                const av = a[key], bv = b[key];
+                if (typeof av === "string") return this.sortDir * av.localeCompare(bv);
+                return this.sortDir * ((av > bv) - (av < bv));
+            });
+        },
+        arrow(key) { return this.sortKey === key ? (this.sortDir === -1 ? "↓" : "↑") : ""; }
+     }'>
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">Sector rollup</h2>
+        <span class="text-[11px] text-stone-500" x-text="rows.length + ' sector' + (rows.length === 1 ? '' : 's') + ' · click headers to sort'"></span>
+    </div>
+
+    <template x-if="rows.length === 0">
+        <p class="text-sm text-stone-500 text-center py-12">No closed trades in selected range.</p>
+    </template>
+
+    <template x-if="rows.length > 0">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider select-none">
+                <tr>
+                    <th class="text-left px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('sector')">
+                        Sector <span x-text="arrow('sector')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('n')">
+                        N <span x-text="arrow('n')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('tickers')">
+                        Tickers <span x-text="arrow('tickers')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('win_rate')">
+                        Win rate <span x-text="arrow('win_rate')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('median_roi_pct')">
+                        Median ROI <span x-text="arrow('median_roi_pct')"></span>
+                    </th>
+                    <th class="text-right px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('total_pnl')">
+                        Total P&L <span x-text="arrow('total_pnl')"></span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                <template x-for="r in rows" :key="r.sector">
+                    <tr class="hover:bg-stone-50">
+                        <td class="px-3 py-2 mono font-medium" x-text="r.sector"></td>
+                        <td class="px-3 py-2 text-right mono text-[12px] text-stone-500" x-text="r.n"></td>
+                        <td class="px-3 py-2 text-right mono text-[12px] text-stone-500" x-text="r.tickers"></td>
+                        <td class="px-3 py-2 text-right">
+                            <div class="inline-flex items-center gap-2">
+                                <div class="w-16 h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                                    <div class="bg-emerald-500 h-full" :style="'width: ' + r.win_rate + '%'"></div>
+                                </div>
+                                <span class="mono text-[12px]" x-text="r.win_rate + '%'"></span>
+                            </div>
+                        </td>
+                        <td class="px-3 py-2 text-right mono text-[12px]"
+                            :class="r.median_roi_pct > 0 ? 'text-emerald-700' : (r.median_roi_pct < 0 ? 'text-red-700' : '')"
+                            x-text="(r.median_roi_pct >= 0 ? '+' : '') + r.median_roi_pct + '%'"></td>
+                        <td class="px-3 py-2 text-right mono font-medium"
+                            :class="r.total_pnl > 0 ? 'text-emerald-700' : (r.total_pnl < 0 ? 'text-red-700' : '')"
+                            x-text="(r.total_pnl >= 0 ? '+$' : '-$') + Math.abs(r.total_pnl).toLocaleString(undefined, {maximumFractionDigits: 0})"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </template>
+</div>
+
+<p class="text-[11px] text-stone-500 mt-3 leading-relaxed max-w-2xl">
+    Sectors derived from <span class="mono">ticker_sectors</span> in rules.yaml. 4+ open positions in one sector triggers the sector-concentration hard flag (per <span class="mono">data-derived</span>).
+</p>
+
+{% endblock %}

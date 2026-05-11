@@ -1,0 +1,379 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+{% if trends.empty %}
+<div class="bg-white border border-stone-200 rounded-lg p-12 text-center">
+    <p class="text-sm text-stone-500">No closed trades yet — trends populate after the first exit.</p>
+</div>
+{% else %}
+
+<!-- Headline trend cards -->
+<div class="grid grid-cols-3 gap-3 mb-6">
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 mb-1">TP1 hit rate</div>
+        <div class="mono text-2xl text-stone-700">{{ trends.tp1_rate }}%</div>
+        <div class="text-[11px] text-stone-500 mt-0.5">{{ trends.n_trades }} trade{{ '' if trends.n_trades == 1 else 's' }} included</div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 mb-1">Median capture</div>
+        <div class="mono text-2xl text-stone-700">
+            {% if trends.capture_pct is not none %}{{ trends.capture_pct }}%{% else %}—{% endif %}
+        </div>
+        <div class="text-[11px] text-stone-500 mt-0.5">realized ÷ peak unrealized</div>
+    </div>
+    <div class="bg-white border border-stone-200 rounded-lg p-4">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 mb-1">Sample size</div>
+        <div class="mono text-2xl text-stone-700">{{ trends.n_trades }}</div>
+        <div class="text-[11px] text-stone-500 mt-0.5">closed positions</div>
+    </div>
+</div>
+
+<!-- By entry (day / week / month) -->
+{% if entry_series %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200 gap-3 flex-wrap">
+        <h2 class="text-[15px] font-semibold text-stone-700">By entry</h2>
+        <div class="flex items-center gap-2">
+            <span class="text-[11px] uppercase tracking-wider text-stone-500">Period</span>
+            <div class="inline-flex border border-stone-300 rounded-md text-[11px] overflow-hidden">
+                {% for p, label in [('day', 'Day'), ('week', 'Week'), ('month', 'Month')] %}
+                <a href="/analytics/trends?range={{ range_key }}&bucket={{ bucket_minutes }}&entry_period={{ p }}"
+                   class="px-2.5 py-1 mono border-r border-stone-300 last:border-r-0
+                          {% if entry_period == p %}bg-stone-900 text-white{% else %}bg-white text-stone-600 hover:bg-stone-50{% endif %}">{{ label }}</a>
+                {% endfor %}
+            </div>
+            <span class="text-[11px] text-stone-500 ml-2">attributed to entry date</span>
+        </div>
+    </div>
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+            <tr>
+                <th class="text-left px-3 py-2 font-medium">
+                    {% if entry_period == 'day' %}Day{% elif entry_period == 'month' %}Month{% else %}Week of{% endif %}
+                </th>
+                {% if entry_period == 'day' %}<th class="text-left px-3 py-2 font-medium">Events</th>{% endif %}
+                <th class="text-right px-3 py-2 font-medium">N</th>
+                <th class="text-right px-3 py-2 font-medium">Win rate</th>
+                <th class="text-right px-3 py-2 font-medium">Median ROI</th>
+                <th class="text-right px-3 py-2 font-medium">Total P&L</th>
+                <th class="text-right px-3 py-2 font-medium">Cumulative</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in entry_series %}
+            <tr {% if entry_period == 'day' and r.events %}class="bg-amber-50/40"{% endif %}>
+                <td class="px-3 py-2 mono font-medium">{{ r.label }}</td>
+                {% if entry_period == 'day' %}
+                <td class="px-3 py-2">
+                    {% for ev in r.events %}
+                    <span class="inline-block text-[10px] mono uppercase tracking-wider px-1.5 py-0.5 rounded mr-1
+                        {% if 'FOMC' in ev %}bg-red-100 text-red-800
+                        {% elif 'CPI' in ev %}bg-amber-100 text-amber-800
+                        {% else %}bg-stone-100 text-stone-700{% endif %}">{{ ev }}</span>
+                    {% endfor %}
+                </td>
+                {% endif %}
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-500">{{ r.n_trades }}</td>
+                <td class="px-3 py-2 text-right">
+                    {% if r.n_trades > 0 %}
+                    <div class="inline-flex items-center gap-2">
+                        <div class="w-16 h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                            <div class="bg-emerald-500 h-full" style="width: {{ r.win_rate }}%"></div>
+                        </div>
+                        <span class="mono text-[12px]">{{ r.win_rate }}%</span>
+                    </div>
+                    {% else %}
+                    <span class="text-stone-300">—</span>
+                    {% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.median_roi_pct > 0 %}text-emerald-700{% elif r.median_roi_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.n_trades > 0 %}{% if r.median_roi_pct >= 0 %}+{% endif %}{{ r.median_roi_pct }}%{% else %}—{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono font-medium {% if r.total_pnl > 0 %}text-emerald-700{% elif r.total_pnl < 0 %}text-red-700{% endif %}">
+                    {% if r.n_trades > 0 %}{% if r.total_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(r.total_pnl) }}{% else %}—{% endif %}
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.cumulative > 0 %}text-emerald-700{% elif r.cumulative < 0 %}text-red-700{% endif %}">
+                    {% if r.cumulative >= 0 %}+{% endif %}${{ "%.0f"|format(r.cumulative) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Per-DTE bucket -->
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">By DTE bucket</h2>
+        <span class="text-[11px] text-stone-500">data-derived</span>
+    </div>
+    {% if trends.dte_rows %}
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+            <tr>
+                <th class="text-left px-3 py-2 font-medium">Bucket</th>
+                <th class="text-right px-3 py-2 font-medium">N</th>
+                <th class="text-right px-3 py-2 font-medium">Win rate</th>
+                <th class="text-right px-3 py-2 font-medium">Median ROI</th>
+                <th class="text-right px-3 py-2 font-medium">Total P&L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in trends.dte_rows %}
+            <tr>
+                <td class="px-3 py-2 mono font-medium">{{ r.bucket }} DTE</td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-500">{{ r.n }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ r.win_rate }}%</td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.median_roi_pct > 0 %}text-emerald-700{% elif r.median_roi_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.median_roi_pct >= 0 %}+{% endif %}{{ r.median_roi_pct }}%
+                </td>
+                <td class="px-3 py-2 text-right mono font-medium {% if r.total_pnl > 0 %}text-emerald-700{% elif r.total_pnl < 0 %}text-red-700{% endif %}">
+                    {% if r.total_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(r.total_pnl) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-sm text-stone-500 text-center py-6">No DTE data.</p>
+    {% endif %}
+</div>
+
+<!-- Per-regime -->
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">By regime</h2>
+        <span class="text-[11px] text-stone-500">data-derived</span>
+    </div>
+    {% if trends.regime_rows %}
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+            <tr>
+                <th class="text-left px-3 py-2 font-medium">Regime</th>
+                <th class="text-right px-3 py-2 font-medium">N</th>
+                <th class="text-right px-3 py-2 font-medium">Win rate</th>
+                <th class="text-right px-3 py-2 font-medium">Median ROI</th>
+                <th class="text-right px-3 py-2 font-medium">Total P&L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in trends.regime_rows %}
+            <tr>
+                <td class="px-3 py-2 mono font-medium">{{ r.regime }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-500">{{ r.n }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ r.win_rate }}%</td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.median_roi_pct > 0 %}text-emerald-700{% elif r.median_roi_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.median_roi_pct >= 0 %}+{% endif %}{{ r.median_roi_pct }}%
+                </td>
+                <td class="px-3 py-2 text-right mono font-medium {% if r.total_pnl > 0 %}text-emerald-700{% elif r.total_pnl < 0 %}text-red-700{% endif %}">
+                    {% if r.total_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(r.total_pnl) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-sm text-stone-500 text-center py-6">No regime data.</p>
+    {% endif %}
+</div>
+
+<!-- Intraday entry time (toggleable bucket, ET) -->
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200 gap-3 flex-wrap">
+        <h2 class="text-[15px] font-semibold text-stone-700">By entry time (ET)</h2>
+        <div class="flex items-center gap-2">
+            <span class="text-[11px] uppercase tracking-wider text-stone-500">Bucket</span>
+            <div class="inline-flex border border-stone-300 rounded-md text-[11px] overflow-hidden">
+                {% for b, label in [(5, '5m'), (10, '10m'), (60, '1h')] %}
+                <a href="/analytics/trends?range={{ range_key }}&bucket={{ b }}"
+                   class="px-2.5 py-1 mono border-r border-stone-300 last:border-r-0
+                          {% if bucket_minutes == b %}bg-stone-900 text-white{% else %}bg-white text-stone-600 hover:bg-stone-50{% endif %}">{{ label }}</a>
+                {% endfor %}
+            </div>
+            <span class="text-[11px] text-stone-500 ml-2">data-derived</span>
+        </div>
+    </div>
+    {% if trends.intraday_rows %}
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+            <tr>
+                <th class="text-left px-3 py-2 font-medium">ET window</th>
+                <th class="text-right px-3 py-2 font-medium">N</th>
+                <th class="text-right px-3 py-2 font-medium">Win rate</th>
+                <th class="text-right px-3 py-2 font-medium">Median ROI</th>
+                <th class="text-right px-3 py-2 font-medium">Total P&L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in trends.intraday_rows %}
+            <tr>
+                <td class="px-3 py-2 mono font-medium text-[12px]">{{ r.hour }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-500">{{ r.n }}</td>
+                <td class="px-3 py-2 text-right">
+                    <div class="inline-flex items-center gap-2">
+                        <div class="w-16 h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                            <div class="bg-emerald-500 h-full" style="width: {{ r.win_rate }}%"></div>
+                        </div>
+                        <span class="mono text-[12px]">{{ r.win_rate }}%</span>
+                    </div>
+                </td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.median_roi_pct > 0 %}text-emerald-700{% elif r.median_roi_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.median_roi_pct >= 0 %}+{% endif %}{{ r.median_roi_pct }}%
+                </td>
+                <td class="px-3 py-2 text-right mono font-medium {% if r.total_pnl > 0 %}text-emerald-700{% elif r.total_pnl < 0 %}text-red-700{% endif %}">
+                    {% if r.total_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(r.total_pnl) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p class="text-[11px] text-stone-500 px-5 py-2 leading-relaxed">
+        Entry time converted UTC → America/New_York with DST handled automatically. Pre-market and after-hours entries are excluded.
+    </p>
+    {% else %}
+    <p class="text-sm text-stone-500 text-center py-6">No intraday data.</p>
+    {% endif %}
+</div>
+
+<!-- Day of week -->
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">By day of week</h2>
+        <span class="text-[11px] text-stone-500">entry day, not exit</span>
+    </div>
+    {% if trends.dow_rows %}
+    <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+            <tr>
+                <th class="text-left px-3 py-2 font-medium">Day</th>
+                <th class="text-right px-3 py-2 font-medium">N</th>
+                <th class="text-right px-3 py-2 font-medium">Win rate</th>
+                <th class="text-right px-3 py-2 font-medium">Median ROI</th>
+                <th class="text-right px-3 py-2 font-medium">Total P&L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in trends.dow_rows %}
+            <tr>
+                <td class="px-3 py-2 mono font-medium">{{ r.day }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px] text-stone-500">{{ r.n }}</td>
+                <td class="px-3 py-2 text-right mono text-[12px]">{{ r.win_rate }}%</td>
+                <td class="px-3 py-2 text-right mono text-[12px] {% if r.median_roi_pct > 0 %}text-emerald-700{% elif r.median_roi_pct < 0 %}text-red-700{% endif %}">
+                    {% if r.median_roi_pct >= 0 %}+{% endif %}{{ r.median_roi_pct }}%
+                </td>
+                <td class="px-3 py-2 text-right mono font-medium {% if r.total_pnl > 0 %}text-emerald-700{% elif r.total_pnl < 0 %}text-red-700{% endif %}">
+                    {% if r.total_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(r.total_pnl) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-sm text-stone-500 text-center py-6">No day-of-week data.</p>
+    {% endif %}
+</div>
+
+{# MFE vs realized scatter retired — replaced by the per-ticker MFE/MAE
+   table on the Underlyings tab, which is easier to read. Kept the block
+   below commented in case you want it back. #}
+{% if false %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">MFE vs realized · chart</h2>
+        <span class="text-[11px] text-stone-500">data-derived</span>
+    </div>
+    {% if trends.scatter %}
+    {% set max_mfe = trends.scatter | map(attribute='mfe') | max %}
+    {% set min_realized = trends.scatter | map(attribute='realized') | min %}
+    {% set max_realized = trends.scatter | map(attribute='realized') | max %}
+    {% set xmax = (max_mfe if max_mfe > max_realized else max_realized) | round(0, 'ceil') %}
+    {% set xmax = xmax if xmax > 50 else 50 %}
+    {% set ymin = min_realized if min_realized < 0 else -25 %}
+    {% set ymin = ymin | round(0, 'floor') %}
+    {% set xrange = xmax %}
+    {% set yrange = xmax - ymin %}
+
+    <div class="p-5">
+        <svg viewBox="-30 -20 340 240" class="w-full max-w-3xl mx-auto block" preserveAspectRatio="xMidYMid meet">
+            {# Grid lines — every 25% on both axes #}
+            {% for v in [25, 50, 75, 100, 125, 150, 175, 200, 225, 250] %}
+                {% if v <= xmax %}
+                <line x1="{{ v / xrange * 280 }}" y1="0" x2="{{ v / xrange * 280 }}" y2="200"
+                      stroke="#f5f5f4" stroke-width="0.5"/>
+                {% set yval_y = 200 - ((v - ymin) / yrange * 200) %}
+                {% if yval_y >= 0 and yval_y <= 200 %}
+                <line x1="0" y1="{{ yval_y }}" x2="280" y2="{{ yval_y }}"
+                      stroke="#f5f5f4" stroke-width="0.5"/>
+                <text x="-4" y="{{ yval_y + 3 }}" text-anchor="end" font-size="8" fill="#a8a29e" class="mono">{{ v }}</text>
+                {% endif %}
+                <text x="{{ v / xrange * 280 }}" y="213" text-anchor="middle" font-size="8" fill="#a8a29e" class="mono">{{ v }}</text>
+                {% endif %}
+            {% endfor %}
+
+            {# Axes #}
+            <line x1="0" y1="0" x2="0" y2="200" stroke="#a8a29e" stroke-width="0.5"/>
+            <line x1="0" y1="200" x2="280" y2="200" stroke="#a8a29e" stroke-width="0.5"/>
+
+            {# Diagonal y=x = perfect capture #}
+            <line x1="0" y1="{{ 200 - ((0 - ymin) / yrange * 200) }}" x2="280" y2="{{ 200 - ((xmax - ymin) / yrange * 200) }}"
+                  stroke="#10b981" stroke-width="0.8" stroke-dasharray="3 2"/>
+
+            {# Zero realized line #}
+            {% set zero_y = 200 - ((0 - ymin) / yrange * 200) %}
+            <line x1="0" y1="{{ zero_y }}" x2="280" y2="{{ zero_y }}"
+                  stroke="#d6d3d1" stroke-dasharray="2 2" stroke-width="0.5"/>
+            <text x="-4" y="{{ zero_y + 3 }}" text-anchor="end" font-size="8" fill="#78716c" class="mono">0</text>
+
+            {# y-min label #}
+            <text x="-4" y="200" text-anchor="end" font-size="8" fill="#a8a29e" class="mono">{{ ymin }}</text>
+
+            {# Axis titles #}
+            <text x="140" y="232" text-anchor="middle" font-size="10" fill="#57534e" font-weight="500">MFE % (peak unrealized)</text>
+            <text x="-20" y="100" text-anchor="middle" font-size="10" fill="#57534e" font-weight="500"
+                  transform="rotate(-90, -20, 100)">Realized %</text>
+
+            {# Diagonal label #}
+            <text x="270" y="{{ 200 - ((xmax - ymin) / yrange * 200) - 4 }}" text-anchor="end" font-size="8" fill="#10b981">y=x · perfect capture</text>
+
+            {# Points #}
+            {% for p in trends.scatter %}
+                {% set cx = p.mfe / xrange * 280 if xrange > 0 else 0 %}
+                {% set cy = 200 - ((p.realized - ymin) / yrange * 200) if yrange > 0 else 100 %}
+                <circle cx="{{ cx }}" cy="{{ cy }}" r="3.5"
+                        fill="{% if p.win %}#10b981{% else %}#ef4444{% endif %}"
+                        fill-opacity="0.55" stroke="#fff" stroke-width="0.5">
+                    <title>{{ p.ticker }} · MFE {{ p.mfe }}% · realized {{ p.realized }}%</title>
+                </circle>
+            {% endfor %}
+        </svg>
+
+        <div class="flex items-center justify-center gap-6 mt-3 text-[11px] text-stone-600">
+            <span class="inline-flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> winners
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 rounded-full bg-red-500"></span> losers
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+                <span class="w-3 h-0.5 bg-emerald-500" style="border-top: 1px dashed #10b981;"></span> y=x (perfect capture)
+            </span>
+            <span class="text-stone-500">{{ trends.scatter|length }} trades plotted</span>
+        </div>
+        <p class="text-[11px] text-stone-500 mt-2 leading-relaxed">
+            Each dot is one trade. X = peak unrealized %, Y = actual exit %. Dots well below the green line = "MFE high, realized low" — capture issue, not edge issue. Dots near the diagonal = clean exits at peak.
+        </p>
+    </div>
+    {% else %}
+    <p class="text-sm text-stone-500 text-center py-6">No MFE data (positions need <span class="mono">max_option_price</span> tracked).</p>
+    {% endif %}
+</div>
+{% endif %} {# end of retired scatter block #}
+
+{% endif %}
+
+{% endblock %}

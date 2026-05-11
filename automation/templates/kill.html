@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_settings_tabs.html" %}
+
+<p class="text-sm text-stone-600 mb-8 max-w-2xl leading-relaxed">
+    Three layers, ordered by severity. Switches never auto-close positions —
+    closing is a separate authorization. Existing GTC orders continue
+    running.
+</p>
+
+<div class="grid grid-cols-2 gap-6 max-w-3xl">
+
+    <!-- KILL -->
+    <div class="bg-white border {% if kill_active %}border-red-300{% else %}border-stone-200{% endif %} rounded-lg p-5">
+        <div class="flex items-center justify-between mb-2">
+            <div>
+                <div class="font-semibold text-stone-900">KILL</div>
+                <div class="text-[12px] text-stone-500 mt-0.5">All new entries rejected. GTCs persist.</div>
+            </div>
+            {% if kill_active %}
+            <span class="inline-flex items-center gap-1.5 text-red-700 text-sm font-medium">
+                <span class="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>ACTIVE
+            </span>
+            {% else %}
+            <span class="text-stone-400 text-sm">off</span>
+            {% endif %}
+        </div>
+
+        <form method="post" action="/kill" class="mt-4">
+            {% if kill_active %}
+            <button type="submit" name="action" value="kill_off"
+                    class="w-full bg-stone-900 hover:bg-stone-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                Disable kill switch
+            </button>
+            {% else %}
+            <button type="submit" name="action" value="kill_on"
+                    class="w-full bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                Activate kill switch
+            </button>
+            {% endif %}
+        </form>
+
+        <div class="text-[11px] text-stone-400 mt-3">
+            File: ~/.gamma/automation/KILL
+        </div>
+    </div>
+
+    <!-- PAUSE -->
+    <div class="bg-white border {% if pause_active %}border-amber-300{% else %}border-stone-200{% endif %} rounded-lg p-5">
+        <div class="flex items-center justify-between mb-2">
+            <div>
+                <div class="font-semibold text-stone-900">PAUSE</div>
+                <div class="text-[12px] text-stone-500 mt-0.5">Soft-pause new entries. "I'm on a plane."</div>
+            </div>
+            {% if pause_active %}
+            <span class="inline-flex items-center gap-1.5 text-amber-700 text-sm font-medium">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>ACTIVE
+            </span>
+            {% else %}
+            <span class="text-stone-400 text-sm">off</span>
+            {% endif %}
+        </div>
+
+        <form method="post" action="/kill" class="mt-4">
+            {% if pause_active %}
+            <button type="submit" name="action" value="pause_off"
+                    class="w-full bg-stone-900 hover:bg-stone-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                Resume
+            </button>
+            {% else %}
+            <button type="submit" name="action" value="pause_on"
+                    class="w-full bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                Pause new entries
+            </button>
+            {% endif %}
+        </form>
+
+        <div class="text-[11px] text-stone-400 mt-3">
+            File: ~/.gamma/automation/PAUSE
+        </div>
+    </div>
+</div>
+
+<div class="bg-stone-100 rounded-lg p-5 mt-8 max-w-3xl text-sm text-stone-600">
+    <div class="text-[11px] uppercase tracking-wider text-stone-700 font-medium mb-2">Auto-trip</div>
+    Daily realized loss ≥ <span class="mono">$1,000</span> automatically activates KILL until next trading day.
+    Edge-decay alarm (rolling-50 win rate < 50%) auto-activates PAUSE pending review.
+    Both checks run inside the order manager event loop.
+</div>
+
+{% endblock %}

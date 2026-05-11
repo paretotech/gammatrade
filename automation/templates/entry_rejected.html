@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="max-w-2xl">
+
+    <div class="flex items-center gap-2.5 mb-1">
+        <div class="w-2 h-2 rounded-full bg-red-500"></div>
+        <span class="text-red-700 text-sm font-medium">Entry rejected by pre-trade gate</span>
+    </div>
+    <p class="text-stone-500 text-sm mb-6">No order placed. Adjust and retry, or override by editing rules.</p>
+
+    <div class="bg-red-50 border border-red-200 rounded-lg p-5 mb-6">
+        <div class="text-[11px] uppercase tracking-wider text-red-700 font-medium mb-2">Reason</div>
+        <div class="text-sm text-red-900 leading-relaxed">{{ reason }}</div>
+    </div>
+
+    {% if risk_eval %}{% include "_risk_panel.html" %}{% endif %}
+
+    <div class="bg-white border border-stone-200 rounded-lg p-5 mb-6">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Submitted intent</div>
+        <div class="grid grid-cols-2 gap-y-2 gap-x-8 text-sm">
+            <div><span class="text-stone-500">Contract:</span> <span class="mono">{{ intent.ticker }} {{ intent.expiry }} {{ intent.strike|int }}{{ intent.right }}</span></div>
+            <div><span class="text-stone-500">Qty:</span> <span class="mono">{{ intent.contracts }}</span></div>
+            <div><span class="text-stone-500">Regime:</span> {{ intent.regime_tag }}</div>
+            <div><span class="text-stone-500">Sector:</span> {{ intent.sector }}</div>
+        </div>
+    </div>
+
+    <div class="flex gap-3">
+        <a href="/entries/new" class="bg-stone-900 hover:bg-stone-700 text-white px-5 py-2 rounded-md text-sm font-medium transition-colors">Edit and retry</a>
+        <a href="/rules" class="text-sm text-stone-500 hover:text-stone-900 self-center">Review rules</a>
+    </div>
+
+</div>
+
+{% endblock %}

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-2xl">
+    Paste the pregame brief (or upload the .docx) for the day. The
+    system parses sections, extracts PRE-GAME PICKS as actionable candidates,
+    compares each ticker against historical reference cohort records, and
+    surfaces strategy-guide gates.
+</p>
+
+<!-- Upload card -->
+<div class="bg-white border border-stone-200 rounded-lg p-6 mb-8 max-w-2xl">
+    <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">
+        {% if today_loaded %}Replace {{ today }} pregame{% else %}New pregame{% endif %}
+    </div>
+
+    <form method="post" action="/pregame" enctype="multipart/form-data" class="space-y-4">
+        <div>
+            <label class="block text-[12px] text-stone-600 mb-1.5">Date</label>
+            <input type="date" name="note_date" value="{{ today }}" required
+                   class="mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+        </div>
+
+        <div>
+            <label class="block text-[12px] text-stone-600 mb-1.5">Upload .docx</label>
+            <input type="file" name="upload" accept=".docx,.txt"
+                   class="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-md file:border file:border-stone-300 file:bg-stone-50 file:text-stone-700 hover:file:bg-stone-100 file:cursor-pointer">
+        </div>
+
+        <div class="text-[12px] text-stone-500 text-center">— or —</div>
+
+        <div>
+            <label class="block text-[12px] text-stone-600 mb-1.5">Paste pregame text</label>
+            <textarea name="pasted_text" rows="10" placeholder="DATE: ...&#10;NIGHT BEFORE&#10;...&#10;PRE-GAME PICKS&#10;NVDA above 212&#10;..."
+                      class="w-full mono text-[12px] px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 leading-relaxed"></textarea>
+        </div>
+
+        <div class="flex items-center gap-3 pt-2">
+            <button type="submit" class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-md text-sm font-medium transition-colors">
+                Parse pregame
+            </button>
+            <span class="text-[11px] text-stone-500">.docx upload takes priority over pasted text if both are provided.</span>
+        </div>
+    </form>
+</div>
+
+<!-- Saved pregames -->
+<section>
+    <h2 class="text-[15px] font-semibold text-stone-700 mb-3">Saved pregames</h2>
+
+    {% if notes %}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider">
+                <tr>
+                    <th class="text-left px-4 py-2.5 font-medium">Date</th>
+                    <th class="text-right px-4 py-2.5 font-medium">Picks</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Tickers</th>
+                    <th class="text-right px-4 py-2.5 font-medium">Size</th>
+                    <th class="text-right px-4 py-2.5 font-medium"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for n in notes %}
+                <tr class="hover:bg-stone-50">
+                    <td class="px-4 py-3 mono">{{ n.date }}</td>
+                    <td class="px-4 py-3 text-right mono">{{ n.n_picks }}</td>
+                    <td class="px-4 py-3">
+                        {% for t in n.tickers %}<span class="inline-block px-1.5 py-0.5 mr-1 rounded bg-stone-100 text-stone-700 mono text-[11px]">{{ t }}</span>{% endfor %}
+                    </td>
+                    <td class="px-4 py-3 text-right text-stone-500 mono text-[12px]">{{ n.size }}b</td>
+                    <td class="px-4 py-3 text-right">
+                        <a href="/pregame/{{ n.date }}" class="text-emerald-700 hover:underline text-[12px] font-medium">View →</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="bg-white border border-stone-200 rounded-lg p-8 text-center text-stone-500 text-sm">
+        No pregames saved yet. Upload one above to get started.
+    </div>
+    {% endif %}
+</section>
+
+{% endblock %}

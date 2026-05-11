@@ -1,0 +1,11 @@
+{# Tab nav for Analytics. Pass active_tab as: 'pnl' | 'trades' | 'tickers' | 'trends' #}
+<nav class="flex gap-1 mb-6 border-b border-stone-200">
+    {% for slug, label in [('pnl', 'P&L'), ('trades', 'Trade log'), ('tickers', 'Underlyings'), ('sectors', 'Sectors'), ('trends', 'Trends')] %}
+    <a href="/analytics/{{ slug }}"
+       class="px-3 py-2 -mb-px text-sm border-b-2 transition-colors
+              {% if active_tab == slug %}border-emerald-600 text-stone-900 font-medium
+              {% else %}border-transparent text-stone-500 hover:text-stone-900{% endif %}">
+        {{ label }}
+    </a>
+    {% endfor %}
+</nav>
