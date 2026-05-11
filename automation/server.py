@@ -1660,6 +1660,9 @@ async def settings_landing(request: Request) -> RedirectResponse:
 
 
 # ─── Settings: API keys ─────────────────────────────────────────────────────
+#
+# Generic per-key endpoints so adding a new managed secret is just a config
+# entry in automation/secrets.py:MANAGED — no new routes needed.
 
 @app.get("/settings/keys", response_class=HTMLResponse)
 async def settings_keys_view(request: Request) -> HTMLResponse:
@@ -1670,29 +1673,52 @@ async def settings_keys_view(request: Request) -> HTMLResponse:
             "page_title": "Settings",
             "active_tab": "keys",
             "keys":       user_secrets.status(),
+            "key_meta":   _KEY_META,
             **nav_context(),
         },
     )
 
 
-@app.post("/settings/keys", response_class=HTMLResponse)
+# Human-readable metadata for each managed secret. Kept here (not in
+# secrets.py) because it's UI copy, not data layer concern.
+_KEY_META: dict[str, dict] = {
+    "anthropic_api_key": {
+        "label":   "ANTHROPIC_API_KEY",
+        "purpose": "Used by pregame analysis + EOD review.",
+        "doc_url": "https://console.anthropic.com/settings/keys",
+        "prefix_hint": "sk-ant-…",
+    },
+    "polygon_api_key": {
+        "label":   "POLYGON_API_KEY",
+        "purpose": "Used for MFE/MAE backfill and live option-price fetches via polygon.io.",
+        "doc_url": "https://polygon.io/dashboard/api-keys",
+        "prefix_hint": "(alphanumeric)",
+    },
+}
+
+
+@app.post("/settings/keys/{key_name}", response_class=HTMLResponse)
 async def settings_keys_save(
     request: Request,
-    anthropic_api_key: str = Form(""),
+    key_name: str,
+    value: str = Form(""),
 ) -> RedirectResponse:
-    # Empty submission means "leave whatever's there alone" — explicit
-    # deletion goes through the separate /delete endpoint so a stray
-    # blank submit can't wipe a working key by accident.
-    val = (anthropic_api_key or "").strip()
+    if key_name not in dict(user_secrets.known_keys()):
+        return RedirectResponse(url="/settings/keys", status_code=303)
+    val = (value or "").strip()
     if val:
-        user_secrets.save("anthropic_api_key", val)
-    return RedirectResponse(url="/settings/keys?saved=1", status_code=303)
+        # Empty submission is a no-op so a stray blank submit can't wipe a
+        # working key — explicit deletion goes through /delete.
+        user_secrets.save(key_name, val)
+    return RedirectResponse(url=f"/settings/keys?saved={key_name}", status_code=303)
 
 
-@app.post("/settings/keys/delete", response_class=HTMLResponse)
-async def settings_keys_delete(request: Request) -> RedirectResponse:
-    user_secrets.clear("anthropic_api_key")
-    return RedirectResponse(url="/settings/keys?deleted=1", status_code=303)
+@app.post("/settings/keys/{key_name}/delete", response_class=HTMLResponse)
+async def settings_keys_delete(request: Request, key_name: str) -> RedirectResponse:
+    if key_name not in dict(user_secrets.known_keys()):
+        return RedirectResponse(url="/settings/keys", status_code=303)
+    user_secrets.clear(key_name)
+    return RedirectResponse(url=f"/settings/keys?deleted={key_name}", status_code=303)
 
 
 # ─── Settings: Broker ───────────────────────────────────────────────────────

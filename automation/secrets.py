@@ -31,6 +31,7 @@ SECRETS_PATH = Path.home() / ".gamma" / "automation" / "secrets.json"
 # env-var name the rest of the code uses.
 MANAGED: dict[str, str] = {
     "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "polygon_api_key":   "POLYGON_API_KEY",
 }
 
 
