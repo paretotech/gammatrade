@@ -2211,6 +2211,37 @@ def ladder_analysis(range_key: str = "all") -> dict:
             "avg_pnl":       round(row["total_pnl"] / row["n"], 0) if row["n"] else 0,
         })
 
+    # ── Per-ticker × per-tier matrix ─────────────────────────────────
+    # Two rollups with tickers as rows and TP tiers as columns:
+    #   - median minutes from entry to each TP fill
+    #   - median % gain over entry at each TP fill
+    # Filtered to tickers with at least one TP1 fill, sorted by total
+    # TP1 fill count desc.
+    by_ticker_tier: dict[tuple, list[dict]] = defaultdict(list)
+    by_ticker_total: dict[str, int] = defaultdict(int)
+    for t in trades:
+        ticker = t["ticker"]
+        for f in t.get("tp_fills") or []:
+            tier = f.get("tier")
+            if tier in (1, 2, 3):
+                by_ticker_tier[(ticker, tier)].append(f)
+                by_ticker_total[ticker] += 1
+
+    ticker_matrix = []
+    for ticker in sorted(by_ticker_total.keys(),
+                         key=lambda k: -by_ticker_total[k]):
+        row = {"ticker": ticker, "tiers": {}}
+        for tier in (1, 2, 3):
+            fills = by_ticker_tier.get((ticker, tier), [])
+            pcts = [f["pct"]  for f in fills if f.get("pct")  is not None]
+            mins = [f["mins"] for f in fills if f.get("mins") is not None]
+            row["tiers"][tier] = {
+                "n":          len(fills),
+                "median_pct": round(median(pcts), 1) if pcts else None,
+                "median_mins":round(median(mins), 1) if mins else None,
+            }
+        ticker_matrix.append(row)
+
     return {
         "range_key":      range_key,
         "n_total":        n_total,
@@ -2219,6 +2250,7 @@ def ladder_analysis(range_key: str = "all") -> dict:
         "tier_rows":      tier_rows,
         "completion_rows": completion_rows,
         "progression":    progression_comparison,
+        "ticker_matrix":  ticker_matrix,
     }
 
 

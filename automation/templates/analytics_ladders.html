@@ -208,6 +208,121 @@
 {% endif %}
 {% endif %}
 
+{# ─── Per-ticker × per-tier matrices ──────────────────────────────── #}
+{% if data.ticker_matrix %}
+{% macro tier_cell(cell, kind) %}
+    {% if cell.n == 0 %}
+        <td class="py-2 mono text-right text-stone-300">—</td>
+    {% else %}
+        {% if kind == "mins" %}
+            <td class="py-2 mono text-right text-stone-700">
+                {% if cell.median_mins is none %}—
+                {% elif cell.median_mins < 60 %}{{ "%.0f"|format(cell.median_mins) }}m
+                {% elif cell.median_mins < 1440 %}{{ "%.1f"|format(cell.median_mins / 60) }}h
+                {% else %}{{ "%.1f"|format(cell.median_mins / 1440) }}d
+                {% endif %}
+                <span class="text-stone-400 text-[10px] ml-1">n={{ cell.n }}</span>
+            </td>
+        {% else %}
+            <td class="py-2 mono text-right
+                {% if cell.median_pct is none %}text-stone-300
+                {% elif cell.median_pct > 0 %}text-emerald-700
+                {% elif cell.median_pct < 0 %}text-red-700{% endif %}">
+                {% if cell.median_pct is none %}—
+                {% else %}{{ "%+.1f"|format(cell.median_pct) }}%
+                {% endif %}
+                <span class="text-stone-400 text-[10px] ml-1">n={{ cell.n }}</span>
+            </td>
+        {% endif %}
+    {% endif %}
+{% endmacro %}
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+    {# Table 1: time-to-TP per underlying #}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-stone-200">
+            <h3 class="text-[13px] font-semibold text-stone-700">Time to TP — by underlying</h3>
+            <p class="text-[11px] text-stone-500 mt-0.5">
+                Median minutes (or h / d when longer) from entry to the TP fill at each tier.
+            </p>
+        </div>
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+                <tr>
+                    <th class="text-left  px-5 py-2 font-medium">Ticker</th>
+                    <th class="text-right py-2 font-medium">TP1</th>
+                    <th class="text-right py-2 font-medium">TP2</th>
+                    <th class="text-right py-2 pr-5 font-medium">TP3</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for r in data.ticker_matrix %}
+                <tr class="hover:bg-stone-50">
+                    <td class="px-5 py-2 mono font-medium">{{ r.ticker }}</td>
+                    {{ tier_cell(r.tiers[1], "mins") }}
+                    {{ tier_cell(r.tiers[2], "mins") }}
+                    {% set c = r.tiers[3] %}
+                    {% if c.n == 0 %}
+                        <td class="py-2 mono text-right pr-5 text-stone-300">—</td>
+                    {% else %}
+                        <td class="py-2 mono text-right pr-5 text-stone-700">
+                            {% if c.median_mins < 60 %}{{ "%.0f"|format(c.median_mins) }}m
+                            {% elif c.median_mins < 1440 %}{{ "%.1f"|format(c.median_mins / 60) }}h
+                            {% else %}{{ "%.1f"|format(c.median_mins / 1440) }}d
+                            {% endif %}
+                            <span class="text-stone-400 text-[10px] ml-1">n={{ c.n }}</span>
+                        </td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {# Table 2: TP-fill % above entry per underlying #}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-stone-200">
+            <h3 class="text-[13px] font-semibold text-stone-700">ROI at TP — by underlying</h3>
+            <p class="text-[11px] text-stone-500 mt-0.5">
+                Median % gain above entry at each TP fill. Negative cells (red)
+                mean the broker tagged a below-entry exit as a TP — likely a
+                stop wearing a TP label.
+            </p>
+        </div>
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+                <tr>
+                    <th class="text-left  px-5 py-2 font-medium">Ticker</th>
+                    <th class="text-right py-2 font-medium">TP1</th>
+                    <th class="text-right py-2 font-medium">TP2</th>
+                    <th class="text-right py-2 pr-5 font-medium">TP3</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for r in data.ticker_matrix %}
+                <tr class="hover:bg-stone-50">
+                    <td class="px-5 py-2 mono font-medium">{{ r.ticker }}</td>
+                    {{ tier_cell(r.tiers[1], "pct") }}
+                    {{ tier_cell(r.tiers[2], "pct") }}
+                    {% set c = r.tiers[3] %}
+                    {% if c.n == 0 %}
+                        <td class="py-2 mono text-right pr-5 text-stone-300">—</td>
+                    {% else %}
+                        <td class="py-2 mono text-right pr-5
+                            {% if c.median_pct > 0 %}text-emerald-700
+                            {% elif c.median_pct < 0 %}text-red-700{% endif %}">
+                            {{ "%+.1f"|format(c.median_pct) }}%
+                            <span class="text-stone-400 text-[10px] ml-1">n={{ c.n }}</span>
+                        </td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
 {# ─── What-if ladder simulator ─────────────────────────────────────── #}
 <div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
     <div class="px-5 py-3 border-b border-stone-200">
