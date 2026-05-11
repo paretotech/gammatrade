@@ -2184,6 +2184,101 @@ async def settings_keys_delete(request: Request, key_name: str) -> RedirectRespo
 
 # ─── Settings: Broker ───────────────────────────────────────────────────────
 
+@app.get("/settings/levels", response_class=HTMLResponse)
+async def settings_levels_view(request: Request, q: Optional[str] = None) -> HTMLResponse:
+    """Per-ticker support/resistance level browser. Each row is the LATEST
+    snapshot for that ticker; the optional `q` query filters by ticker prefix.
+    Rolls in a "stale check" against the most recent option-bar price for the
+    ticker (or last-known underlying close) so the user can see which tickers
+    need a fresh level publish."""
+    from . import levels as _lv
+    snaps = _lv.latest_for_all()
+
+    if q:
+        ql = q.strip().upper()
+        snaps = [s for s in snaps if ql in s.ticker]
+
+    # Last cached underlying close per ticker — used to flag stale snapshots
+    # whose published levels no longer bracket the current price. Falls back
+    # to the snapshot's own current_price when no underlying bars are cached.
+    try:
+        from src import bars_store
+    except Exception:
+        bars_store = None
+
+    rows = []
+    for s in snaps:
+        last_close = s.current_price
+        if bars_store is not None:
+            try:
+                df = bars_store.load_underlying_bars(s.ticker)
+                last_close = float(df["c"].dropna().iloc[-1])
+            except (FileNotFoundError, IndexError, ValueError, KeyError):
+                pass
+        stale_info = (
+            _lv.needs_refresh(s, last_close)
+            if last_close is not None
+            else {"stale": False, "reasons": []}
+        )
+        rows.append({
+            "ticker":        s.ticker,
+            "asof_ts":       s.asof_ts,
+            "current_price": s.current_price,
+            "last_close":    last_close,
+            "levels_below":  s.levels_below,
+            "levels_above":  s.levels_above,
+            "source":        s.source,
+            "note":          s.note,
+            "stale":         stale_info["stale"],
+            "stale_reasons": stale_info["reasons"],
+        })
+
+    return TEMPLATES.TemplateResponse(
+        "settings_levels.html",
+        {
+            "request":     request,
+            "page_title":  "Settings",
+            "active_tab":  "levels",
+            "rows":        rows,
+            "q":           q or "",
+            **nav_context(),
+        },
+    )
+
+
+@app.post("/settings/levels/{ticker}", response_class=HTMLResponse)
+async def settings_levels_upsert(
+    request: Request,
+    ticker: str,
+    levels_below: str = Form(""),
+    levels_above: str = Form(""),
+    current_price: Optional[float] = Form(None),
+) -> RedirectResponse:
+    """Hand-edited save. Stamps a new asof_ts so this snapshot becomes the
+    'latest' for the ticker. Levels arrive as pipe-separated strings to match
+    the bulk-import format."""
+    from . import levels as _lv
+    snap = _lv.LevelSnapshot(
+        ticker=ticker.upper(),
+        asof_ts=datetime.now().isoformat(timespec="seconds"),
+        current_price=current_price,
+        levels_below=_lv._parse_pipe_levels(levels_below),
+        levels_above=_lv._parse_pipe_levels(levels_above),
+        source="manual",
+        note="",
+    )
+    _lv.upsert(snap)
+    return RedirectResponse(url="/settings/levels?saved=" + ticker.upper(),
+                            status_code=303)
+
+
+@app.post("/settings/levels/{ticker}/delete", response_class=HTMLResponse)
+async def settings_levels_delete(ticker: str) -> RedirectResponse:
+    from . import levels as _lv
+    _lv.delete_ticker(ticker)
+    return RedirectResponse(url="/settings/levels", status_code=303)
+
+
 @app.get("/settings/broker", response_class=HTMLResponse)
 async def broker_view(request: Request) -> HTMLResponse:
     broker = app.state.broker

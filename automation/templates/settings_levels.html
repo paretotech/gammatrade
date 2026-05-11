@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block content %}
+{% include "_settings_tabs.html" %}
+
+<div class="mb-4 flex items-baseline gap-3 flex-wrap">
+    <h1 class="text-lg font-semibold text-stone-900">Support / resistance levels</h1>
+    <span class="text-[12px] text-stone-500">{{ rows|length }} ticker{{ "s" if rows|length != 1 else "" }} mapped</span>
+
+    <form method="get" action="/settings/levels" class="ml-auto flex items-center gap-2">
+        <input type="text" name="q" value="{{ q }}" placeholder="filter ticker…"
+               class="px-2 py-1 text-[12px] border border-stone-300 rounded
+                      focus:outline-none focus:border-emerald-500">
+        {% if q %}
+        <a href="/settings/levels" class="text-[11px] text-stone-500 hover:underline">clear</a>
+        {% endif %}
+    </form>
+</div>
+
+<p class="text-[12px] text-stone-500 mb-5 max-w-3xl leading-relaxed">
+    Per-ticker key levels used in pregame analysis and trade review. Each row is the
+    latest snapshot; older snapshots stay in the DB as history. A
+    <span class="px-1 py-0.5 text-[10px] bg-amber-50 text-amber-700 border border-amber-200 rounded">stale</span>
+    badge appears when the current underlying price has moved outside the mapped
+    range (near ATH or below all support) — these tickers need a fresh publish.
+</p>
+
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left  px-4 py-2 font-medium">Ticker</th>
+                <th class="text-right py-2 font-medium">Now</th>
+                <th class="text-left  px-3 py-2 font-medium">Support (below)</th>
+                <th class="text-left  px-3 py-2 font-medium">Resistance (above)</th>
+                <th class="text-left  py-2 font-medium">Last update</th>
+                <th class="text-center pr-4 py-2 font-medium">·</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+        {% for r in rows %}
+            <tr class="hover:bg-stone-50"
+                x-data="{ editing: false, rowBelow: '{{ r.levels_below | join('|') }}', rowAbove: '{{ r.levels_above | join('|') }}' }">
+                <td class="px-4 py-2">
+                    <span class="mono font-semibold">{{ r.ticker }}</span>
+                    {% if r.stale %}
+                    <span class="ml-1.5 inline-block px-1 py-0.5 text-[10px] bg-amber-50 text-amber-700 border border-amber-200 rounded"
+                          title="{{ r.stale_reasons | join('; ') }}">
+                        stale
+                    </span>
+                    {% endif %}
+                </td>
+                <td class="py-2 text-right mono">
+                    {% if r.last_close %}
+                        ${{ "%.2f"|format(r.last_close) }}
+                        {% if r.last_close != r.current_price %}
+                        <div class="text-[10px] text-stone-400">
+                            snap ${{ "%.2f"|format(r.current_price) if r.current_price else "—" }}
+                        </div>
+                        {% endif %}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+
+                {# Levels below — read mode #}
+                <td class="px-3 py-2 mono text-[11px] text-stone-700" x-show="!editing">
+                    {% if r.levels_below %}
+                        {% for lvl in r.levels_below %}<span
+                            class="inline-block px-1.5 py-0.5 rounded
+                                   {% if r.last_close and (r.last_close - lvl) / r.last_close < 0.01 %}bg-emerald-50 text-emerald-700{% else %}text-stone-600{% endif %}">${{ "%g"|format(lvl) }}</span>{% endfor %}
+                    {% else %}
+                        <span class="text-stone-400">—</span>
+                    {% endif %}
+                </td>
+                {# Levels above — read mode #}
+                <td class="px-3 py-2 mono text-[11px] text-stone-700" x-show="!editing">
+                    {% if r.levels_above %}
+                        {% for lvl in r.levels_above %}<span
+                            class="inline-block px-1.5 py-0.5 rounded
+                                   {% if r.last_close and (lvl - r.last_close) / r.last_close < 0.01 %}bg-red-50 text-red-700{% else %}text-stone-600{% endif %}">${{ "%g"|format(lvl) }}</span>{% endfor %}
+                    {% else %}
+                        <span class="text-stone-400">—</span>
+                    {% endif %}
+                </td>
+
+                {# Edit mode — both columns merge into the form. #}
+                <td colspan="2" class="px-3 py-2" x-show="editing" style="display: none;">
+                    <form method="post" action="/settings/levels/{{ r.ticker }}"
+                          class="flex flex-col gap-1.5">
+                        <input name="levels_below" x-model="rowBelow"
+                               placeholder="pipe-separated levels below (e.g. 220|225|228)"
+                               class="px-2 py-1 text-[11px] mono border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+                        <input name="levels_above" x-model="rowAbove"
+                               placeholder="pipe-separated levels above (e.g. 232|236|240)"
+                               class="px-2 py-1 text-[11px] mono border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+                        <div class="flex gap-2">
+                            <input type="hidden" name="current_price" value="{{ r.last_close or '' }}">
+                            <button type="submit"
+                                    class="px-3 py-1 text-[11px] bg-emerald-600 text-white rounded hover:bg-emerald-700">
+                                Save
+                            </button>
+                            <button type="button" @click="editing = false"
+                                    class="px-2 py-1 text-[11px] text-stone-500 hover:text-stone-900">
+                                Cancel
+                            </button>
+                        </div>
+                    </form>
+                </td>
+
+                <td class="py-2 text-stone-500 mono text-[11px]">{{ r.asof_ts[:10] }}</td>
+                <td class="pr-4 py-2 text-center">
+                    <button type="button" x-show="!editing" @click="editing = true"
+                            class="text-[11px] text-stone-500 hover:text-emerald-700">
+                        edit
+                    </button>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="6" class="px-4 py-8 text-center text-sm text-stone-400">
+                No levels yet. Import a CSV or hit the
+                <a href="/settings/levels/add" class="text-emerald-700 hover:underline">add form</a>.
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Add new ticker -->
+<div class="bg-white border border-stone-200 rounded-lg p-4 mt-6"
+     x-data="{ ticker: '', below: '', above: '' }">
+    <h3 class="text-[12px] font-semibold uppercase tracking-wider text-stone-500 mb-3">
+        Add levels for a new ticker
+    </h3>
+    <form method="post" :action="'/settings/levels/' + (ticker.toUpperCase() || 'TICKER')"
+          class="grid grid-cols-1 md:grid-cols-3 gap-2 text-[12px]">
+        <input name="ticker_display" x-model="ticker" placeholder="TICKER"
+               class="px-2 py-1 mono border border-stone-300 rounded uppercase focus:outline-none focus:border-emerald-500">
+        <input name="levels_below" x-model="below"
+               placeholder="below: 220|225|228"
+               class="px-2 py-1 mono border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+        <input name="levels_above" x-model="above"
+               placeholder="above: 232|236|240"
+               class="px-2 py-1 mono border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+        <button type="submit" :disabled="!ticker"
+                class="col-span-full md:col-span-1 mt-1 px-3 py-1 bg-emerald-600 text-white rounded
+                       hover:bg-emerald-700 disabled:opacity-50">
+            Add
+        </button>
+    </form>
+</div>
+
+{% endblock %}

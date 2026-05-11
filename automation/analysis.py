@@ -160,6 +160,21 @@ OUTPUT_SCHEMA = {
 
 def _build_user_prompt(parsed: dict, today: str) -> str:
     """Construct the per-request user prompt from parsed pregame data."""
+    # Pull the latest published support/resistance levels for every
+    # ticker appearing in this pregame. Levels are sourced from the
+    # Settings → Levels tab (manually curated chartist snapshots).
+    from . import levels as _lv
+    seen_tickers = set()
+    for c in parsed.get("candidates", []):
+        seen_tickers.add(c.ticker.upper())
+    for c in parsed.get("watch_candidates", []):
+        seen_tickers.add(c.ticker.upper())
+    ticker_levels: dict[str, Any] = {}
+    for tkr in seen_tickers:
+        snap = _lv.latest_for_ticker(tkr)
+        if snap is not None:
+            ticker_levels[tkr] = snap
+
     lines = [f"Today: {today}", ""]
     lines.append("PREGAME RAW TEXT (sections):")
     for name, content in parsed["sections"].items():
@@ -177,6 +192,25 @@ def _build_user_prompt(parsed: dict, today: str) -> str:
         lines.append("MACRO CONFLUENCE DETECTED:")
         for m in parsed["macro_confluence"]:
             lines.append(f"  {m['ticker']} {m['direction']} {m['level']} (from: '{m.get('raw_line','')[:80]}')")
+        lines.append("")
+
+    if ticker_levels:
+        lines.append("PUBLISHED LEVELS (chartist snapshots, latest per ticker):")
+        for tkr in sorted(ticker_levels.keys()):
+            snap = ticker_levels[tkr]
+            below = ", ".join(f"{v:g}" for v in snap.levels_below) or "—"
+            above = ", ".join(f"{v:g}" for v in snap.levels_above) or "—"
+            asof  = snap.asof_ts[:10]
+            cp    = f"${snap.current_price:g}" if snap.current_price else "—"
+            lines.append(
+                f"  {tkr}  (asof {asof}, snap price {cp}):"
+                f"  support [{below}]  ·  resistance [{above}]"
+            )
+        lines.append(
+            "Use these as the authoritative level set. When a pick references "
+            "a level that's NOT in the published support/resistance, call it "
+            "out as 'off-level' in the risk field."
+        )
         lines.append("")
 
     lines.append(f"PRE-GAME PICKS (n={len(parsed['candidates'])}):")
