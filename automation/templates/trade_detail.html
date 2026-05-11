@@ -41,6 +41,59 @@
     <!-- LEFT — lifecycle (fills + MFE/MAE) -->
     <div class="lg:col-span-2 space-y-6">
 
+        <!-- Price lifecycle chart -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5"
+             x-data="tradeChart('{{ intent_id }}')"
+             x-init="load()">
+            <div class="flex items-baseline justify-between mb-3">
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">
+                    Option price · entry → expiry
+                </div>
+                <div class="text-[11px] text-stone-400" x-show="status === 'ok'">
+                    <span class="mono" x-text="occ"></span>
+                    · <span x-text="bars.length + ' min bars'"></span>
+                </div>
+            </div>
+
+            <div x-show="status === 'loading'" class="text-[12px] text-stone-400 py-12 text-center">
+                loading bars…
+            </div>
+            <div x-show="status === 'missing'" class="text-[12px] text-stone-500 py-8 text-center">
+                No cached price bars for <span class="mono" x-text="occ || '(this contract)'"></span>.
+                Run the Polygon backfill on
+                <a href="/settings/keys" class="text-emerald-700 hover:underline">Settings → API keys</a>.
+            </div>
+            <div x-show="status === 'error'" class="text-[12px] text-red-600 py-8 text-center">
+                <span x-text="errorMsg"></span>
+            </div>
+
+            <div x-show="status === 'ok'" class="relative" style="height: 280px;">
+                <canvas x-ref="canvas"></canvas>
+            </div>
+
+            <!-- Marker legend -->
+            <div x-show="status === 'ok'" class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-[11px] text-stone-600">
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-600"></span> Entry
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-sky-500"></span> TP1
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-indigo-500"></span> TP2
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-violet-600"></span> TP3
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span> Exit / Stop
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-stone-400"></span> Expiry
+                </span>
+            </div>
+        </div>
+
         <!-- Fill ladder -->
         <div class="bg-white border border-stone-200 rounded-lg p-5">
             <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Fill ladder</div>
@@ -265,5 +318,156 @@
         </div>
     </div>
 </div>
+
+<!-- Chart.js + time-scale adapter (loaded only on this page) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+<script>
+function tradeChart(intentId) {
+    return {
+        status:    'loading',  // loading | ok | missing | error
+        occ:       '',
+        bars:      [],
+        markers:   [],
+        errorMsg:  '',
+        _chart:    null,
+
+        async load() {
+            try {
+                const res = await fetch(`/trades/${intentId}/chart.json`);
+                const body = await res.json();
+                if (!res.ok) {
+                    if (res.status === 404 && body.hint) {
+                        this.occ = body.occ || '';
+                        this.status = 'missing';
+                    } else {
+                        this.errorMsg = body.error || `HTTP ${res.status}`;
+                        this.status = 'error';
+                    }
+                    return;
+                }
+                this.occ     = body.occ;
+                this.bars    = body.bars || [];
+                this.markers = body.markers || [];
+
+                // Append the expiry marker so it shows alongside fills
+                if (body.expiry_marker) {
+                    this.markers.push({
+                        ...body.expiry_marker,
+                        kind: 'expiry', label: 'Expiry',
+                    });
+                }
+
+                this.status = 'ok';
+                // Wait one tick so the canvas is in the DOM (x-show toggled)
+                this.$nextTick(() => this.render());
+            } catch (e) {
+                this.errorMsg = e.message || 'fetch failed';
+                this.status = 'error';
+            }
+        },
+
+        render() {
+            const ctx = this.$refs.canvas;
+            if (!ctx || !window.Chart) return;
+
+            const colorFor = (kind) => ({
+                entry:  'rgb(5, 150, 105)',     // emerald-600
+                tp1:    'rgb(14, 165, 233)',    // sky-500
+                tp2:    'rgb(99, 102, 241)',    // indigo-500
+                tp3:    'rgb(124, 58, 237)',    // violet-600
+                exit:   'rgb(239, 68, 68)',     // red-500
+                expiry: 'rgb(168, 162, 158)',   // stone-400
+            }[kind] || 'rgb(120, 113, 108)');
+
+            const lineData = this.bars.map(b => ({ x: b.t, y: b.c }));
+
+            const kinds = ['entry', 'tp1', 'tp2', 'tp3', 'exit', 'expiry'];
+            const scatterDatasets = kinds.map(k => {
+                const points = this.markers
+                    .filter(m => m.kind === k)
+                    .map(m => ({ x: m.t, y: m.y, label: m.label,
+                                 side: m.side, contracts: m.contracts }));
+                return {
+                    type: 'scatter',
+                    label: k.toUpperCase(),
+                    data: points,
+                    backgroundColor: colorFor(k),
+                    borderColor: colorFor(k),
+                    pointRadius: k === 'expiry' ? 5 : 6,
+                    pointHoverRadius: 8,
+                    pointStyle: k === 'expiry' ? 'rectRot' : 'circle',
+                    showLine: false,
+                };
+            });
+
+            if (this._chart) this._chart.destroy();
+            this._chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            type: 'line',
+                            label: 'Option close',
+                            data: lineData,
+                            borderColor: 'rgb(68, 64, 60)',  // stone-700
+                            backgroundColor: 'rgba(68, 64, 60, 0.06)',
+                            borderWidth: 1.5,
+                            fill: true,
+                            pointRadius: 0,
+                            tension: 0.15,
+                        },
+                        ...scatterDatasets,
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'nearest', intersect: false },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: (items) => {
+                                    if (!items.length) return '';
+                                    const d = new Date(items[0].parsed.x);
+                                    return d.toLocaleString();
+                                },
+                                label: (item) => {
+                                    const ds = item.dataset.label || '';
+                                    const y  = item.parsed.y;
+                                    const p  = item.raw || {};
+                                    if (p.label) {
+                                        const qty = p.contracts ? ` · ${p.contracts}x` : '';
+                                        return `${p.label}${qty} @ $${y.toFixed(2)}`;
+                                    }
+                                    return `${ds}: $${y.toFixed(2)}`;
+                                },
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { tooltipFormat: 'MMM d, HH:mm' },
+                            grid: { color: 'rgba(0,0,0,0.04)' },
+                            ticks: { font: { size: 10 }, color: 'rgb(120, 113, 108)' },
+                        },
+                        y: {
+                            grid: { color: 'rgba(0,0,0,0.04)' },
+                            ticks: {
+                                font: { size: 10 },
+                                color: 'rgb(120, 113, 108)',
+                                callback: (v) => '$' + v.toFixed(2),
+                            },
+                        },
+                    },
+                },
+            });
+        },
+    };
+}
+</script>
 
 {% endblock %}

@@ -1150,6 +1150,122 @@ async def trade_detail(request: Request, intent_id: str) -> HTMLResponse:
     )
 
 
+@app.get("/trades/{intent_id}/chart.json", response_class=JSONResponse)
+async def trade_chart_data(intent_id: str) -> JSONResponse:
+    """Option-price lifecycle data for the per-trade detail chart.
+
+    Returns 1-minute close bars for the option contract spanning the period
+    from market open on the entry day through expiry close, plus marker
+    points for each fill (entry, TP1/2/3, stop, expiry) so the front-end
+    can overlay them on the line.
+
+    Source: cached Polygon parquet bars (data/bars/options/). Returns 404
+    if the contract has no cached bars yet — user should run the Polygon
+    backfill via Settings → API keys.
+    """
+    from datetime import date as _date
+    import pandas as pd
+
+    raw_intent = state.get_intent(intent_id)
+    if raw_intent is None:
+        return JSONResponse({"error": "intent not found"}, status_code=404)
+
+    # Build OCC symbol from the intent's contract identity
+    from src.contract_symbols import build_occ_symbol
+    from src import bars_store
+
+    try:
+        expiry_d = _date.fromisoformat(str(raw_intent["expiry"])[:10])
+        occ = build_occ_symbol(
+            ticker=raw_intent["ticker"],
+            expiry=expiry_d,
+            option_type=raw_intent["right"],
+            strike=float(raw_intent["strike"]),
+        )
+    except (KeyError, ValueError, TypeError) as exc:
+        return JSONResponse(
+            {"error": f"could not derive OCC symbol: {exc}"}, status_code=400
+        )
+
+    try:
+        df = bars_store.load_option_bars(occ)
+    except FileNotFoundError:
+        return JSONResponse(
+            {
+                "error": "no cached bars for this contract",
+                "occ":   occ,
+                "hint":  "run the Polygon backfill on Settings → API keys",
+            },
+            status_code=404,
+        )
+
+    if df.empty:
+        return JSONResponse({"error": "empty bars file", "occ": occ}, status_code=404)
+
+    # Pull fills so the front end can overlay markers
+    with state.connect() as conn:
+        fills = [dict(r) for r in conn.execute(
+            "SELECT ts, side, contracts, price, is_entry, tp_tier "
+            "FROM fills WHERE intent_id=? ORDER BY ts ASC, rowid ASC",
+            (intent_id,),
+        ).fetchall()]
+
+    # Series: close-by-minute, in epoch-ms (what Chart.js time scale expects).
+    # We send only the columns the chart needs to keep the payload small.
+    df = df.dropna(subset=["t", "c"])
+    bars_payload = [
+        {"t": int(row["t"]), "c": float(row["c"])}
+        for row in df[["t", "c"]].to_dict(orient="records")
+    ]
+
+    # Markers: each fill at its timestamp. Front-end colors them by kind.
+    def _to_epoch_ms(ts: str) -> Optional[int]:
+        if not ts:
+            return None
+        try:
+            return int(datetime.fromisoformat(ts[:19]).timestamp() * 1000)
+        except ValueError:
+            return None
+
+    markers = []
+    for f in fills:
+        t_ms = _to_epoch_ms(f["ts"])
+        if t_ms is None:
+            continue
+        if f["is_entry"] == 1:
+            kind, label = "entry", "Entry"
+        elif f["tp_tier"]:
+            tier = int(f["tp_tier"])
+            kind, label = f"tp{tier}", f"TP{tier}"
+        else:
+            kind, label = "exit", "Exit"
+        markers.append({
+            "t":         t_ms,
+            "y":         float(f["price"]),
+            "kind":      kind,
+            "label":     label,
+            "side":      f["side"],
+            "contracts": f["contracts"],
+        })
+
+    # Expiry marker: 16:00 ET on expiry day (we approximate with the last
+    # bar in the series so it lands on the chart even if expiry is in the
+    # future and we don't have post-close bars).
+    expiry_t = int(df["t"].iloc[-1])
+    expiry_price = float(df["c"].iloc[-1])
+
+    return JSONResponse({
+        "occ":           occ,
+        "ticker":        raw_intent["ticker"],
+        "strike":        float(raw_intent["strike"]),
+        "right":         raw_intent["right"],
+        "expiry":        str(expiry_d),
+        "bars":          bars_payload,   # [{t: epoch_ms, c: close}]
+        "markers":       markers,        # [{t, y, kind, label, ...}]
+        "expiry_marker": {"t": expiry_t, "y": expiry_price},
+    })
+
+
 @app.post("/analytics/trades/import", response_class=HTMLResponse)
 async def analytics_trades_import(
     request: Request,
