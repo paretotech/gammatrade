@@ -99,6 +99,7 @@
         sortDir: -1,
         expanded: {},
         activeTags: [],            // filter — AND semantics: row must carry ALL selected tags
+        showFilter: false,         // chip strip collapsed by default; toggled by the filter icon
         toggle(id) { this.expanded[id] = !this.expanded[id]; },
         isOpen(id) { return !!this.expanded[id]; },
         fmtPct(v) {
@@ -141,11 +142,34 @@
      }'>
     <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
         <h2 class="text-[15px] font-semibold text-stone-700">Closed trades</h2>
-        <span class="text-[11px] text-stone-500" x-text="visible.length + ' shown · click headers to sort'"></span>
+        <div class="flex items-center gap-3">
+            <span class="text-[11px] text-stone-500" x-text="visible.length + ' shown · click headers to sort'"></span>
+            {# Filter toggle — opens the chip strip below. Highlights when any
+               filter is active so the user can spot why the row count differs
+               from total. #}
+            <button type="button" @click="showFilter = !showFilter"
+                    :class="(showFilter || activeTags.length > 0)
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                        : 'text-stone-500 hover:text-stone-900 border-stone-200 hover:border-stone-300'"
+                    class="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded border transition-colors"
+                    title="Filter by setup tag">
+                {# Funnel/filter glyph #}
+                <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor"
+                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 5h14M6 10h8M9 15h2"/>
+                </svg>
+                <span>Filter</span>
+                <span x-show="activeTags.length > 0"
+                      class="ml-0.5 px-1.5 rounded-full bg-emerald-600 text-white text-[9px] font-semibold mono"
+                      x-text="activeTags.length"></span>
+            </button>
+        </div>
     </div>
 
-    {# Tag filter strip — AND semantics (a row must carry ALL selected tags). #}
-    <div class="px-5 py-2 border-b border-stone-200 bg-stone-50/40 flex flex-wrap items-center gap-1 text-[11px]">
+    {# Tag filter strip — hidden until the user clicks the filter icon.
+       AND semantics: a row must carry ALL selected tags. #}
+    <div x-show="showFilter" x-cloak
+         class="px-5 py-2 border-b border-stone-200 bg-stone-50/40 flex flex-wrap items-center gap-1 text-[11px]">
         <span class="text-stone-500 uppercase tracking-wider text-[10px] font-medium mr-1">Filter</span>
         <template x-for="t in catalog" :key="t.key">
             <button type="button" @click="toggleTag(t.key)"
