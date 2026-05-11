@@ -342,6 +342,12 @@ def analyze_pregame(parsed: dict, pregame_date: str,
     if not force:
         cached = get_cached(pregame_date)
         if cached:
+            # Re-merge setup eval against the CURRENT levels snapshot. The
+            # Claude response is cached forever; the setup numbers track
+            # live levels so old cached pregames pick up newly published
+            # levels without requiring re-analysis.
+            if cached.get("analysis"):
+                cached["analysis"] = _merge_setup_eval(cached["analysis"], parsed)
             return {**cached, "cached": True}
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -411,6 +417,12 @@ def analyze_pregame(parsed: dict, pregame_date: str,
             "cached": False,
         }
 
+    # Merge the deterministic setup eval into each pick (by ticker match)
+    # and compute a day-level R:R distribution. Server-attached, not
+    # Claude-generated — so the eval can never be misstated in the LLM
+    # response and the rendered card always shows the real numbers.
+    analysis = _merge_setup_eval(analysis, parsed)
+
     result = {
         "status": "ok",
         "analysis": analysis,
@@ -427,3 +439,50 @@ def analyze_pregame(parsed: dict, pregame_date: str,
     }
     _save_cache(pregame_date, result)
     return result
+
+
+def _merge_setup_eval(analysis: dict, parsed: dict) -> dict:
+    """Attach setup-evaluation numbers to each Claude-emitted pick (by
+    ticker match against the parsed candidates) and compute a day-level
+    R:R distribution. Returns the same analysis dict, mutated in place."""
+    from . import levels as _lv
+
+    # Build a (ticker → eval) lookup from the parsed candidates
+    eval_by_ticker: dict[str, dict] = {}
+    for c in parsed.get("candidates", []):
+        ev = _lv.evaluate_pick_level(c.ticker, c.level, c.direction)
+        if ev is None:
+            continue
+        eval_by_ticker[c.ticker.upper()] = {
+            "entry_level":    c.level,
+            "direction":      c.direction,
+            **ev,
+        }
+
+    # Attach to each Claude pick. Picks Claude generated for tickers
+    # outside `candidates` (rare) just don't get an eval and render
+    # without the Setup row.
+    counts = {"good": 0, "fair": 0, "poor": 0, "incomplete": 0, "no_eval": 0}
+    on_level_count = 0
+    off_level_count = 0
+    for p in analysis.get("picks", []):
+        tkr = (p.get("ticker") or "").upper()
+        if tkr in eval_by_ticker:
+            p["setup_eval"] = eval_by_ticker[tkr]
+            counts[eval_by_ticker[tkr]["rr_verdict"]] += 1
+            if eval_by_ticker[tkr]["level_status"] in ("on", "near"):
+                on_level_count += 1
+            else:
+                off_level_count += 1
+        else:
+            counts["no_eval"] += 1
+
+    analysis["setup_summary"] = {
+        **counts,
+        "n_total":      len(analysis.get("picks", [])),
+        "on_level":     on_level_count,
+        "off_level":    off_level_count,
+        "poor_pct":     round(counts["poor"] / max(1, len(analysis.get("picks", []))) * 100),
+        "good_pct":     round(counts["good"] / max(1, len(analysis.get("picks", []))) * 100),
+    }
+    return analysis

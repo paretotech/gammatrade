@@ -442,12 +442,20 @@ async def pregame_view(request: Request, note_date: str,
 
     # Claude analysis: cached by date; only runs when requested explicitly
     # (?run_analysis=1) to avoid burning tokens on every page view.
+    # We route both paths through analyze_pregame() so the deterministic
+    # setup-eval merge runs against the CURRENT levels snapshot on every
+    # render — cached pregames pick up newly-published levels without
+    # re-analysis.
     if run_analysis:
         ai_result = analysis.analyze_pregame(parsed, note_date, force=False)
     else:
-        ai_result = analysis.get_cached(note_date)
-        if ai_result:
-            ai_result = {**ai_result, "cached": True}
+        cached = analysis.get_cached(note_date)
+        if cached:
+            if cached.get("analysis"):
+                cached = {**cached, "analysis": analysis._merge_setup_eval(cached["analysis"], parsed)}
+            ai_result = {**cached, "cached": True}
+        else:
+            ai_result = None
 
     return TEMPLATES.TemplateResponse(
         "pregame_view.html",
