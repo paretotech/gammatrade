@@ -86,7 +86,11 @@
                     <span class="inline-block w-2.5 h-2.5 rounded-full bg-violet-600"></span> TP3
                 </span>
                 <span class="inline-flex items-center gap-1.5">
-                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span> Exit / Stop
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span> Stop
+                    <span class="text-stone-400 text-[10px]">(below entry / prior TP)</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500"></span> Close
                 </span>
                 <span class="inline-flex items-center gap-1.5">
                     <span class="inline-block w-2.5 h-2.5 rounded-full bg-stone-400"></span> Expiry
@@ -377,13 +381,14 @@ function tradeChart(intentId) {
                 tp1:    'rgb(14, 165, 233)',    // sky-500
                 tp2:    'rgb(99, 102, 241)',    // indigo-500
                 tp3:    'rgb(124, 58, 237)',    // violet-600
-                exit:   'rgb(239, 68, 68)',     // red-500
+                stop:   'rgb(239, 68, 68)',     // red-500    — below entry / prior TP
+                close:  'rgb(245, 158, 11)',    // amber-500  — discretionary profitable exit
                 expiry: 'rgb(168, 162, 158)',   // stone-400
             }[kind] || 'rgb(120, 113, 108)');
 
             const lineData = this.bars.map(b => ({ x: b.t, y: b.c }));
 
-            const kinds = ['entry', 'tp1', 'tp2', 'tp3', 'exit', 'expiry'];
+            const kinds = ['entry', 'tp1', 'tp2', 'tp3', 'stop', 'close', 'expiry'];
             const scatterDatasets = kinds.map(k => {
                 const points = this.markers
                     .filter(m => m.kind === k)

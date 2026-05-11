@@ -1227,21 +1227,49 @@ async def trade_chart_data(intent_id: str) -> JSONResponse:
         except ValueError:
             return None
 
+    # Marker classification:
+    #   entry          — is_entry == 1
+    #   stop           — any exit whose price is BELOW entry OR BELOW the
+    #                    most recent prior TP exit (loss-taking or
+    #                    giving-back-gains exit). This rule overrides any
+    #                    tp_tier the broker tagged, because a "TP3" fill
+    #                    that lands below the TP2 fill is actually a stop.
+    #   tp1 / tp2 / tp3 — broker-tagged take-profit fill that's also at a
+    #                    higher price than entry AND than prior TPs.
+    #   close          — non-TP exit at a price >= entry and >= prior TP
+    #                    (discretionary profitable exit that didn't carry
+    #                    a TP tier tag).
+    #
+    # Fills are walked chronologically so prev_tp_price reflects the last
+    # CLASSIFIED TP fill (skipping any reclassified as stops).
+    entry_price   = None
+    prev_tp_price = None
     markers = []
     for f in fills:
         t_ms = _to_epoch_ms(f["ts"])
         if t_ms is None:
             continue
+        price = float(f["price"])
         if f["is_entry"] == 1:
             kind, label = "entry", "Entry"
-        elif f["tp_tier"]:
-            tier = int(f["tp_tier"])
-            kind, label = f"tp{tier}", f"TP{tier}"
+            if entry_price is None:
+                entry_price = price
         else:
-            kind, label = "exit", "Exit"
+            # Compare against the higher of entry and prior TP — that's
+            # the floor below which the exit is "giving back".
+            refs = [v for v in (entry_price, prev_tp_price) if v is not None]
+            floor = max(refs) if refs else None
+            if floor is not None and price < floor:
+                kind, label = "stop", "Stop"
+            elif f["tp_tier"]:
+                tier = int(f["tp_tier"])
+                kind, label = f"tp{tier}", f"TP{tier}"
+                prev_tp_price = price
+            else:
+                kind, label = "close", "Close"
         markers.append({
             "t":         t_ms,
-            "y":         float(f["price"]),
+            "y":         price,
             "kind":      kind,
             "label":     label,
             "side":      f["side"],
