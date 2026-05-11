@@ -210,6 +210,19 @@ async def new_entry_form(
         "default_right": "P" if direction in ("below", "hold_below", "bounce_below") else "C",
         "presets_json": _json.dumps(presets_computed),
     }
+    # Budget strip for the page header — entries used + today's $ P&L vs cap
+    from . import analytics as _a
+    today_iso = date.today().isoformat()
+    today_trades = [
+        t for t in _a.closed_trades(limit=5000)
+        if (t.get("first_entry_ts") or "")[:10] == today_iso
+    ]
+    today_pnl = round(sum(t.get("realized_pnl") or 0 for t in today_trades), 0)
+    try:
+        loss_cap = rules.daily_loss_cap()
+    except Exception:
+        loss_cap = 1000.0
+
     return TEMPLATES.TemplateResponse(
         "entry_form.html",
         {
@@ -219,6 +232,8 @@ async def new_entry_form(
             "regimes": list(rules.raw["regime_multipliers"].keys()),
             "today_count": state.count_today_entries(),
             "daily_cap": rules.daily_count_cap("NORMAL"),
+            "today_pnl":  today_pnl,
+            "loss_cap":   loss_cap,
             "prefill": prefill,
             **nav_context(),
         },
