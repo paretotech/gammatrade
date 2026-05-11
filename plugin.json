@@ -1,6 +1,6 @@
 {
     "name": "gammatrade",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "description": "Notion-style options trading dashboard with broker-CSV import, analytics, and Claude-powered pregame analysis. Runs locally as a FastAPI webapp; integrates with Claude Code for trade-decision support.",
     "author": {
         "name": "paretotech",

@@ -145,6 +145,118 @@
     {% endif %}
 </div>
 
+<!-- Claude EOD review (optional, API-key gated) -->
+<div id="eod-review" class="bg-white border border-stone-200 rounded-lg p-5 mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Claude EOD review</div>
+        <form method="post" action="/journal/{{ entry_date }}/analyze-eod" class="m-0">
+            <button type="submit"
+                    {% if not api_key_set %}disabled title="ANTHROPIC_API_KEY not set"{% endif %}
+                    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors
+                           {% if api_key_set %}bg-stone-900 hover:bg-stone-700 text-white
+                           {% else %}bg-stone-200 text-stone-400 cursor-not-allowed{% endif %}">
+                {% if eod_review and eod_review.status == "ok" %}Re-run analysis{% else %}Run analysis{% endif %}
+            </button>
+        </form>
+    </div>
+
+    {% if not api_key_set %}
+    <div class="text-[12px] bg-amber-50 border border-amber-200 rounded p-3 text-stone-700">
+        <code class="mono">ANTHROPIC_API_KEY</code> not set. Export it before launching the server
+        to enable the optional automated EOD review:
+        <code class="mono">export&nbsp;ANTHROPIC_API_KEY=sk-…</code>.
+        The journal itself works without it — this panel is purely the optional Claude-coach layer.
+    </div>
+    {% elif not eod_review %}
+    <p class="text-[12px] text-stone-500">
+        Click <strong>Run analysis</strong> to have Claude review today's trades, plan adherence, and your
+        written reflection. Produces a structured verdict, observed patterns, key insight, red flags,
+        and a tomorrow-focus list.
+    </p>
+    {% elif eod_review.status == "no_api_key" %}
+    <div class="text-[12px] bg-amber-50 border border-amber-200 rounded p-3 text-stone-700">
+        {{ eod_review.error }}
+    </div>
+    {% elif eod_review.status == "error" %}
+    <div class="text-[12px] bg-red-50 border border-red-200 rounded p-3 text-stone-700">
+        <div class="font-medium text-red-700 mb-1">Analysis failed</div>
+        {{ eod_review.error }}
+    </div>
+    {% else %}
+        {# status == "ok" — render the analysis #}
+        {% set a = eod_review.analysis %}
+
+        <!-- Day verdict -->
+        <div class="mb-4">
+            <div class="flex items-baseline gap-2 mb-1">
+                <span class="text-[11px] mono px-1.5 py-0.5 rounded
+                    {% if a.day_verdict.rating == 'good' %}bg-emerald-50 text-emerald-700 border border-emerald-200
+                    {% elif a.day_verdict.rating == 'mixed' %}bg-amber-50 text-amber-700 border border-amber-200
+                    {% elif a.day_verdict.rating == 'neutral' %}bg-stone-100 text-stone-600 border border-stone-200
+                    {% elif a.day_verdict.rating == 'concerning' %}bg-orange-50 text-orange-700 border border-orange-200
+                    {% else %}bg-red-50 text-red-700 border border-red-200{% endif %}">
+                    {{ a.day_verdict.rating|upper }}
+                </span>
+                <span class="text-sm font-semibold text-stone-900">{{ a.day_verdict.headline }}</span>
+            </div>
+            <p class="text-[12px] text-stone-600 leading-relaxed">{{ a.day_verdict.summary }}</p>
+        </div>
+
+        <!-- Key insight -->
+        {% if a.key_insight %}
+        <div class="bg-emerald-50 border-l-2 border-emerald-400 px-3 py-2 mb-4">
+            <div class="text-[10px] uppercase tracking-wider text-emerald-800 font-medium mb-0.5">Key insight</div>
+            <p class="text-[13px] text-stone-800">{{ a.key_insight }}</p>
+        </div>
+        {% endif %}
+
+        <!-- Red flags -->
+        {% if a.red_flags %}
+        <div class="bg-red-50 border-l-2 border-red-400 px-3 py-2 mb-4">
+            <div class="text-[10px] uppercase tracking-wider text-red-800 font-medium mb-1">Red flags</div>
+            <ul class="text-[12px] text-stone-800 space-y-1">
+                {% for f in a.red_flags %}<li>· {{ f }}</li>{% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <!-- Patterns -->
+        {% if a.patterns_observed %}
+        <div class="mb-4">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Patterns observed</div>
+            <div class="space-y-2">
+            {% for p in a.patterns_observed %}
+                <div class="border-l-2 border-stone-300 pl-3">
+                    <div class="text-[12px] font-medium text-stone-800">{{ p.pattern }}</div>
+                    <div class="text-[11px] text-stone-600 mt-0.5">
+                        <span class="text-stone-500">Evidence:</span> {{ p.evidence }}
+                    </div>
+                    <div class="text-[11px] text-stone-600 mt-0.5">
+                        <span class="text-stone-500">Implication:</span> {{ p.implication }}
+                    </div>
+                </div>
+            {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Tomorrow focus -->
+        {% if a.tomorrow_focus %}
+        <div class="mb-1">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-1.5">Tomorrow's focus</div>
+            <ol class="text-[12px] text-stone-700 space-y-1 ml-4 list-decimal">
+                {% for f in a.tomorrow_focus %}<li>{{ f }}</li>{% endfor %}
+            </ol>
+        </div>
+        {% endif %}
+
+        <div class="text-[10px] mono text-stone-400 pt-3 mt-3 border-t border-stone-100">
+            model: {{ eod_review.model }} · ran {{ eod_review.ts[:16] }}
+            {% if eod_review.usage %}· tokens in/out {{ eod_review.usage.input }}/{{ eod_review.usage.output }}{% endif %}
+        </div>
+    {% endif %}
+</div>
+
 <!-- Reflection form -->
 <form method="post" action="/journal/{{ entry_date }}" class="bg-white border border-stone-200 rounded-lg p-5 space-y-4">
     <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Reflection</div>

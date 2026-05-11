@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import state, telemetry, gates, pregame, triggers as triggers_mod, analysis, journal
+from . import state, telemetry, gates, pregame, triggers as triggers_mod, analysis, journal, eod_analysis
 from .rules import Rules, CONFIG_PATH
 from .orders import TradeIntent, get_broker
 
@@ -1580,21 +1580,46 @@ async def journal_view(request: Request, entry_date: str) -> HTMLResponse:
         date.fromisoformat(entry_date)
     except ValueError:
         return RedirectResponse(url="/journal", status_code=303)
-    entry = journal.load(entry_date) or {"date": entry_date}
-    summary = journal.day_summary(entry_date)
+    entry     = journal.load(entry_date) or {"date": entry_date}
+    summary   = journal.day_summary(entry_date)
     adherence = journal.adherence_for_day(entry_date)
+    # EOD review is optional — only render the panel if a cached run exists;
+    # otherwise the template shows the "Run EOD review" button.
+    eod_review = eod_analysis.get_cached(entry_date)
+    if eod_review:
+        eod_review = {**eod_review, "cached": True}
+    api_key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
     return TEMPLATES.TemplateResponse(
         "journal_entry.html",
         {
-            "request":    request,
-            "page_title": f"Journal · {entry_date}",
-            "entry_date": entry_date,
-            "entry":      entry,
-            "summary":    summary,
-            "adherence":  adherence,
+            "request":     request,
+            "page_title":  f"Journal · {entry_date}",
+            "entry_date":  entry_date,
+            "entry":       entry,
+            "summary":     summary,
+            "adherence":   adherence,
+            "eod_review":  eod_review,
+            "api_key_set": api_key_set,
             **nav_context(),
         },
     )
+
+
+@app.post("/journal/{entry_date}/analyze-eod", response_class=HTMLResponse)
+async def journal_analyze_eod(request: Request, entry_date: str) -> RedirectResponse:
+    """Trigger a Claude EOD review for this date. Optional — only runs when
+    explicitly clicked. Requires ANTHROPIC_API_KEY; otherwise the cached
+    result will be a "no_api_key" stub.
+    """
+    try:
+        date.fromisoformat(entry_date)
+    except ValueError:
+        return RedirectResponse(url="/journal", status_code=303)
+    entry     = journal.load(entry_date) or {"date": entry_date}
+    summary   = journal.day_summary(entry_date)
+    adherence = journal.adherence_for_day(entry_date)
+    eod_analysis.analyze_eod(entry_date, summary, adherence, entry, force=True)
+    return RedirectResponse(url=f"/journal/{entry_date}#eod-review", status_code=303)
 
 
 @app.post("/journal/{entry_date}", response_class=HTMLResponse)
