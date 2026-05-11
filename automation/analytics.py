@@ -3232,3 +3232,114 @@ def cohort_benchmark(range_key: str = "all") -> dict:
         "by_side":     by_side,
         "by_sector":   by_sector,
     }
+
+
+# ─── Pregame accuracy / outcome loop ─────────────────────────────────────
+# Connects each historical pregame's picks to the actual closed trades
+# that resulted. Answers:
+#   - For each pregame's pick (LIKE / WATCH / PASS), did you take it?
+#   - When you did, what was the outcome?
+#   - Is the analysis "calibrated" — does LIKE win more than WATCH?
+
+def _pregame_dates() -> list[str]:
+    """All cached pregame analysis dates (YYYY-MM-DD)."""
+    from pathlib import Path
+    p = Path.home() / ".gamma" / "automation" / "analyses"
+    if not p.exists():
+        return []
+    return sorted(f.stem for f in p.glob("*.json"))
+
+
+def _load_pregame(d: str):
+    from . import analysis as _anl
+    r = _anl.get_cached(d)
+    if not r or r.get("status") != "ok":
+        return None
+    return r.get("analysis") or None
+
+
+def pregame_accuracy(range_key: str = "all") -> dict:
+    """For every cached pregame, walk its picks and attach the outcome
+    of any matching trade you took that same day."""
+    trades = closed_trades(limit=5000, range_key=range_key)
+
+    # Index trades by (date, ticker) for fast lookup. Multiple trades on the
+    # same ticker on the same day collapse into a list (e.g. chain legs).
+    by_key: dict[tuple, list[dict]] = defaultdict(list)
+    for t in trades:
+        fe = t.get("first_entry_ts") or ""
+        if not fe:
+            continue
+        by_key[(fe[:10], (t.get("ticker") or "").upper())].append(t)
+
+    pregames = []
+    verdict_buckets: dict[str, list[dict]] = defaultdict(list)
+
+    for d in _pregame_dates():
+        a = _load_pregame(d)
+        if not a or not a.get("picks"):
+            continue
+        picks_out = []
+        for p in a["picks"]:
+            tkr = (p.get("ticker") or "").upper()
+            matched = by_key.get((d, tkr), [])
+            total_pnl = round(sum(t.get("realized_pnl") or 0 for t in matched), 0)
+            roi_med = None
+            if matched:
+                rois = [t["actual_pct"] for t in matched if t.get("actual_pct") is not None]
+                if rois:
+                    roi_med = round(median(rois), 1)
+            row = {
+                "ticker":     tkr,
+                "verdict":    p.get("verdict"),
+                "size":       p.get("suggested_size"),
+                "plan":       p.get("plan"),
+                "took":       len(matched) > 0,
+                "n_trades":   len(matched),
+                "trade_ids":  [t["intent_id"] for t in matched],
+                "total_pnl":  total_pnl,
+                "median_roi": roi_med,
+                "winner":     total_pnl > 0,
+                "loser":      total_pnl < 0,
+            }
+            picks_out.append(row)
+            verdict_buckets[p.get("verdict") or "—"].append(row)
+
+        pregames.append({
+            "date":     d,
+            "headline": (a.get("day_read") or {}).get("headline"),
+            "conviction": (a.get("day_read") or {}).get("conviction"),
+            "picks":    picks_out,
+            "n_picks":  len(picks_out),
+            "n_taken":  sum(1 for r in picks_out if r["took"]),
+            "total_pnl": round(sum(r["total_pnl"] for r in picks_out), 0),
+        })
+
+    # Calibration table — for each verdict tier, summarize the trades the
+    # user actually took that matched a pick of that verdict.
+    calibration = []
+    for v in ("LIKE", "WATCH", "PASS"):
+        rows = verdict_buckets.get(v, [])
+        taken = [r for r in rows if r["took"]]
+        wins  = sum(1 for r in taken if r["winner"])
+        losses = sum(1 for r in taken if r["loser"])
+        roi_pool = [r["median_roi"] for r in taken if r["median_roi"] is not None]
+        calibration.append({
+            "verdict":      v,
+            "n_picks":      len(rows),
+            "n_taken":      len(taken),
+            "n_wins":       wins,
+            "n_losses":     losses,
+            "take_rate":    round(len(taken) / len(rows) * 100, 1) if rows else None,
+            "win_rate":     round(wins / len(taken) * 100, 1) if taken else None,
+            "median_roi":   round(median(roi_pool), 1) if roi_pool else None,
+            "total_pnl":    round(sum(r["total_pnl"] for r in taken), 0),
+        })
+
+    return {
+        "pregames":     sorted(pregames, key=lambda x: x["date"], reverse=True),
+        "calibration":  calibration,
+        "n_pregames":   len(pregames),
+        "n_total_picks": sum(p["n_picks"] for p in pregames),
+        "n_taken":      sum(p["n_taken"] for p in pregames),
+    }

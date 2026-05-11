@@ -78,5 +78,43 @@
 
 </div>
 
+<script>
+// Shared Alpine component for the pre-trade decision card. Used on both
+// /entries/new and /triggers/{id}/edit. Calls /api/decision-card whenever
+// the contract fields change (debounced upstream).
+function decisionCard(initial) {
+    return {
+        ticker:  (initial.ticker  || '').toString().toUpperCase(),
+        strike:  initial.strike   || '',
+        right:   initial.right    || 'C',
+        card:    null,
+        loading: false,
+        _seq:    0,
+
+        async refresh() {
+            const t = (this.ticker || '').toString().trim().toUpperCase();
+            this.ticker = t;
+            if (!t) { this.card = null; return; }
+            const params = new URLSearchParams({ ticker: t, right: this.right });
+            if (this.strike !== '' && this.strike !== null && !Number.isNaN(Number(this.strike))) {
+                params.set('strike', String(this.strike));
+            }
+            const seq = ++this._seq;
+            this.loading = true;
+            try {
+                const res = await fetch(`/api/decision-card?${params}`);
+                if (!res.ok) { if (seq === this._seq) this.card = null; return; }
+                const body = await res.json();
+                if (seq === this._seq) this.card = body;
+            } catch (e) {
+                if (seq === this._seq) this.card = null;
+            } finally {
+                if (seq === this._seq) this.loading = false;
+            }
+        },
+    };
+}
+</script>
+
 </body>
 </html>

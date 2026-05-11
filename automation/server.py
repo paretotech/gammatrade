@@ -110,6 +110,29 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 # ─── New Entry ──────────────────────────────────────────────────────────────
 
+@app.post("/api/tags/retag-all", response_class=JSONResponse)
+async def retag_all(range: Optional[str] = None) -> JSONResponse:
+    """Recompute rule-based tags across all closed trades. Returns counts."""
+    from . import tagging
+    rng = _norm_range(range)
+    return JSONResponse(tagging.retag_all(range_key=rng))
+
+
+@app.post("/api/tags/{intent_id}", response_class=JSONResponse)
+async def add_tag(intent_id: str, tag: str = Form(...)) -> JSONResponse:
+    """Manually attach a tag to a trade."""
+    from . import tagging
+    tagging.set_tags(intent_id, [tag], source="manual", replace=False)
+    return JSONResponse({"ok": True, "tags": tagging.get_tags(intent_id)})
+
+
+@app.post("/api/tags/{intent_id}/remove", response_class=JSONResponse)
+async def remove_tag(intent_id: str, tag: str = Form(...)) -> JSONResponse:
+    from . import tagging
+    tagging.remove_tag(intent_id, tag)
+    return JSONResponse({"ok": True, "tags": tagging.get_tags(intent_id)})
+
+
 @app.get("/api/decision-card", response_class=JSONResponse)
 async def decision_card_api(
     ticker: str,
@@ -1102,6 +1125,19 @@ async def analytics_trades(
 ) -> HTMLResponse:
     from . import analytics as _a
     rng = _norm_range(range)
+    # Attach setup tags to each trade + provide catalog for the filter UI
+    from . import tagging
+    trades = _a.closed_trades(limit=500, range_key=rng)
+    with state.connect() as conn:
+        rows = conn.execute(
+            "SELECT intent_id, tag FROM trade_tags"
+        ).fetchall()
+    tag_index: dict[str, list[str]] = {}
+    for r in rows:
+        tag_index.setdefault(r["intent_id"], []).append(r["tag"])
+    for t in trades:
+        t["tags"] = tag_index.get(t["intent_id"], [])
+
     return TEMPLATES.TemplateResponse(
         "analytics_trades.html",
         {
@@ -1110,7 +1146,8 @@ async def analytics_trades(
             "active_tab": "trades",
             "tab_slug": "trades",
             "range_key": rng,
-            "trades": _a.closed_trades(limit=500, range_key=rng),
+            "trades": trades,
+            "tag_catalog": tagging.all_known_tags(),
             "import_status": imported,    # "started" | "ok" | None
             "import_error": import_error,  # error message string or None
             **nav_context(),
@@ -1164,6 +1201,12 @@ async def trade_detail(request: Request, intent_id: str) -> HTMLResponse:
                       ("plan_adherence", "wins", "losses", "lessons", "mfe_gaps", "notes")):
             journal_mention = {"date": entry_date, **je}
 
+    # Setup tags (rule-based + any manual additions)
+    from . import tagging
+    trade_tags = tagging.get_tags(intent_id)
+    tag_catalog = {k: {"label": lbl, "family": fam}
+                   for k, fam, lbl, _ in tagging.TAG_CATALOG}
+
     return TEMPLATES.TemplateResponse(
         "trade_detail.html",
         {
@@ -1175,6 +1218,8 @@ async def trade_detail(request: Request, intent_id: str) -> HTMLResponse:
             "fills":           fills,
             "pregame_mention": pregame_mention,
             "journal_mention": journal_mention,
+            "trade_tags":      trade_tags,
+            "tag_catalog":     tag_catalog,
             **nav_context(),
         },
     )
@@ -1670,6 +1715,29 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
             "tab_slug": "sectors",
             "range_key": rng,
             "rows": _a.sector_leaderboard(range_key=rng),
+            **nav_context(),
+        },
+    )
+
+
+@app.get("/analytics/pregame", response_class=HTMLResponse)
+async def analytics_pregame(
+    request: Request,
+    range: Optional[str] = None,
+) -> HTMLResponse:
+    """Pregame accuracy — per-pregame outcome rollup + LIKE/WATCH/PASS
+    calibration table."""
+    from . import analytics as _a
+    rng = _norm_range(range)
+    return TEMPLATES.TemplateResponse(
+        "analytics_pregame.html",
+        {
+            "request":    request,
+            "page_title": "Analytics",
+            "active_tab": "pregame",
+            "tab_slug":   "pregame",
+            "range_key":  rng,
+            "data":       _a.pregame_accuracy(range_key=rng),
             **nav_context(),
         },
     )

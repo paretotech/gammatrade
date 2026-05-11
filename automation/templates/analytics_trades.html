@@ -87,15 +87,18 @@
     "actual_pct": t.actual_pct,
     "capture_pct": t.capture_pct,
     "capture_exp_pct": t.capture_exp_pct,
+    "tags": t.tags or [],
 }) %}
 {% endfor %}
 
 <div class="bg-white border border-stone-200 rounded-lg overflow-hidden"
      x-data='{
         rows: {{ table_rows | tojson }},
+        catalog: {{ tag_catalog | tojson }},
         sortKey: "entry_date",
         sortDir: -1,
         expanded: {},
+        activeTags: [],            // filter — AND semantics: row must carry ALL selected tags
         toggle(id) { this.expanded[id] = !this.expanded[id]; },
         isOpen(id) { return !!this.expanded[id]; },
         fmtPct(v) {
@@ -115,18 +118,58 @@
                 return this.sortDir * ((av > bv) - (av < bv));
             });
         },
-        arrow(key) { return this.sortKey === key ? (this.sortDir === -1 ? "↓" : "↑") : ""; }
+        arrow(key) { return this.sortKey === key ? (this.sortDir === -1 ? "↓" : "↑") : ""; },
+        toggleTag(t) {
+            const i = this.activeTags.indexOf(t);
+            if (i >= 0) this.activeTags.splice(i, 1);
+            else this.activeTags.push(t);
+        },
+        get visible() {
+            if (this.activeTags.length === 0) return this.rows;
+            return this.rows.filter(r =>
+                this.activeTags.every(t => (r.tags || []).includes(t))
+            );
+        },
+        familyColor(family) {
+            return {
+                level:     "bg-emerald-50 text-emerald-700 border-emerald-200",
+                structure: "bg-sky-50 text-sky-700 border-sky-200",
+                time:      "bg-stone-100 text-stone-700 border-stone-200",
+                execution: "bg-amber-50 text-amber-700 border-amber-200",
+            }[family] || "bg-stone-100 text-stone-700 border-stone-200";
+        }
      }'>
     <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
         <h2 class="text-[15px] font-semibold text-stone-700">Closed trades</h2>
-        <span class="text-[11px] text-stone-500" x-text="rows.length + ' shown · click headers to sort'"></span>
+        <span class="text-[11px] text-stone-500" x-text="visible.length + ' shown · click headers to sort'"></span>
     </div>
 
-    <template x-if="rows.length === 0">
-        <p class="text-sm text-stone-500 text-center py-12">No closed trades in selected range.</p>
+    {# Tag filter strip — AND semantics (a row must carry ALL selected tags). #}
+    <div class="px-5 py-2 border-b border-stone-200 bg-stone-50/40 flex flex-wrap items-center gap-1 text-[11px]">
+        <span class="text-stone-500 uppercase tracking-wider text-[10px] font-medium mr-1">Filter</span>
+        <template x-for="t in catalog" :key="t.key">
+            <button type="button" @click="toggleTag(t.key)"
+                    x-show="t.n_trades > 0"
+                    :class="activeTags.includes(t.key)
+                        ? (familyColor(t.family) + ' ring-1 ring-offset-1 ring-stone-400 font-medium')
+                        : (familyColor(t.family) + ' opacity-60 hover:opacity-100')"
+                    class="px-1.5 py-0.5 rounded border mono">
+                <span x-text="t.label"></span>
+                <span class="text-[9px] opacity-70" x-text="'(' + t.n_trades + ')'"></span>
+            </button>
+        </template>
+        <button x-show="activeTags.length > 0" type="button" @click="activeTags = []"
+                class="ml-2 text-stone-500 hover:text-stone-900 underline">clear</button>
+    </div>
+
+    <template x-if="visible.length === 0">
+        <p class="text-sm text-stone-500 text-center py-12">
+            <span x-show="rows.length === 0">No closed trades in selected range.</span>
+            <span x-show="rows.length > 0 && activeTags.length > 0">No trades match the selected filter.</span>
+        </p>
     </template>
 
-    <template x-if="rows.length > 0">
+    <template x-if="visible.length > 0">
         <table class="w-full text-sm">
             <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider select-none">
                 <tr>
@@ -144,7 +187,7 @@
                     <th class="text-left px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('chain_role')">Role <span x-text="arrow('chain_role')"></span></th>
                 </tr>
             </thead>
-            <template x-for="r in rows" :key="r.intent_id">
+            <template x-for="r in visible" :key="r.intent_id">
                 <tbody class="divide-y divide-stone-100 border-b border-stone-100">
                     <tr class="hover:bg-stone-50 cursor-pointer" @click="toggle(r.intent_id)">
                         <td class="px-2 text-center text-stone-400 select-none"

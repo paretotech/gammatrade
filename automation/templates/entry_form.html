@@ -66,64 +66,7 @@
             </div>
 
             {# ── Decision Card — auto-updates as contract fields change ── #}
-            <div class="mt-4" x-show="card && card.signals && card.signals.length > 0" x-cloak>
-                <div class="border rounded-md overflow-hidden"
-                     :class="{
-                         'border-emerald-300 bg-emerald-50/30': card.verdict === 'strong',
-                         'border-emerald-200 bg-emerald-50/20': card.verdict === 'ok',
-                         'border-stone-200 bg-stone-50':        card.verdict === 'neutral',
-                         'border-amber-300 bg-amber-50/30':     card.verdict === 'marginal',
-                         'border-red-300   bg-red-50/30':       card.verdict === 'stand_down',
-                     }">
-                    <div class="flex items-baseline justify-between px-3 py-2 border-b border-stone-200/50">
-                        <div class="flex items-baseline gap-2">
-                            <span class="text-[10px] uppercase tracking-wider text-stone-500">Decision card</span>
-                            <span class="mono text-[11px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wider"
-                                  :class="{
-                                      'bg-emerald-600 text-white': card.verdict === 'strong',
-                                      'bg-emerald-100 text-emerald-800': card.verdict === 'ok',
-                                      'bg-stone-200 text-stone-700':     card.verdict === 'neutral',
-                                      'bg-amber-100 text-amber-800':     card.verdict === 'marginal',
-                                      'bg-red-600 text-white':           card.verdict === 'stand_down',
-                                  }"
-                                  x-text="(card.verdict || '').replace('_',' ')"></span>
-                        </div>
-                        <span class="text-[10px] text-stone-400 mono"
-                              x-show="card.underlying"
-                              x-text="ticker + ' now $' + (card.underlying || 0).toFixed(2)"></span>
-                    </div>
-
-                    <ul class="px-3 py-2 space-y-1">
-                        <template x-for="s in card.signals" :key="s.kind + s.label">
-                            <li class="flex items-baseline gap-2 text-[12px]">
-                                <span class="text-[10px]"
-                                      x-text="s.tone === 'good' ? '🟢' : (s.tone === 'warn' ? '🟡' : '🔴')"></span>
-                                <span :class="{
-                                          'text-emerald-700': s.tone === 'good',
-                                          'text-amber-700':   s.tone === 'warn',
-                                          'text-red-700':     s.tone === 'bad',
-                                      }" x-text="s.label"></span>
-                            </li>
-                        </template>
-                    </ul>
-
-                    <div class="px-3 py-1.5 border-t border-stone-200/50 text-[11px] text-stone-500 mono flex flex-wrap gap-x-4 gap-y-0.5">
-                        <span x-show="card.daily_budget">
-                            Today: <span :class="card.daily_budget.today_pnl >= 0 ? 'text-emerald-700' : 'text-red-700'"
-                                         x-text="(card.daily_budget.today_pnl >= 0 ? '+$' : '-$') + Math.abs(card.daily_budget.today_pnl).toFixed(0)"></span>
-                            (<span x-text="card.daily_budget.today_n"></span> trades)
-                            · budget left
-                            <span :class="card.daily_budget.remaining < 200 ? 'text-amber-700' : ''"
-                                  x-text="'$' + card.daily_budget.remaining.toFixed(0)"></span>
-                        </span>
-                        <span x-show="card.hour_edge && card.hour_edge.n >= 1"
-                              x-text="String(card.hour_edge.hour).padStart(2,'0') + ':00 hr — ' +
-                                      (card.hour_edge.win_rate != null ? card.hour_edge.win_rate + '% WR' : '—') +
-                                      ' (n=' + card.hour_edge.n + ')'"></span>
-                    </div>
-                </div>
-            </div>
-            <div x-show="loading && !card" class="mt-2 text-[11px] text-stone-400">evaluating setup…</div>
+            {% include "_decision_card.html" %}
         </div>
 
         <!-- Order -->
@@ -452,44 +395,5 @@
     (2) sized for zero (~$1k capital, no stop),
     (3) ok watching it dip without intervening.
 </div>
-
-<script>
-// Decision-card Alpine component. Calls /api/decision-card whenever the
-// contract fields change (debounced upstream) and exposes the payload
-// to the template. Uses a sequence guard so an older slow response
-// never overwrites a fresh one.
-function decisionCard(initial) {
-    return {
-        ticker:  (initial.ticker  || '').toString().toUpperCase(),
-        strike:  initial.strike   || '',
-        right:   initial.right    || 'C',
-        card:    null,
-        loading: false,
-        _seq:    0,
-
-        async refresh() {
-            const t = (this.ticker || '').toString().trim().toUpperCase();
-            this.ticker = t;
-            if (!t) { this.card = null; return; }
-            const params = new URLSearchParams({ ticker: t, right: this.right });
-            if (this.strike !== '' && this.strike !== null && !Number.isNaN(Number(this.strike))) {
-                params.set('strike', String(this.strike));
-            }
-            const seq = ++this._seq;
-            this.loading = true;
-            try {
-                const res = await fetch(`/api/decision-card?${params}`);
-                if (!res.ok) { if (seq === this._seq) this.card = null; return; }
-                const body = await res.json();
-                if (seq === this._seq) this.card = body;
-            } catch (e) {
-                if (seq === this._seq) this.card = null;
-            } finally {
-                if (seq === this._seq) this.loading = false;
-            }
-        },
-    };
-}
-</script>
 
 {% endblock %}

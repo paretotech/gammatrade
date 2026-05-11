@@ -35,6 +35,72 @@
     {% endif %}
 </div>
 
+<!-- Setup tags — rule-based + manual additions -->
+{% if trade_tags or tag_catalog %}
+<div class="flex flex-wrap items-center gap-1.5 mb-5 text-[11px]"
+     x-data='{
+        tags: {{ trade_tags | tojson }},
+        catalog: {{ tag_catalog | tojson }},
+        adding: false,
+        candidate: "",
+        async addTag() {
+            if (!this.candidate) return;
+            const form = new FormData();
+            form.append("tag", this.candidate);
+            const res = await fetch("/api/tags/{{ intent_id }}", { method: "POST", body: form });
+            if (res.ok) { this.tags = (await res.json()).tags; this.candidate = ""; this.adding = false; }
+        },
+        async removeTag(tag) {
+            const form = new FormData();
+            form.append("tag", tag);
+            const res = await fetch("/api/tags/{{ intent_id }}/remove", { method: "POST", body: form });
+            if (res.ok) this.tags = (await res.json()).tags;
+        },
+        familyColor(family) {
+            return {
+                level:     "bg-emerald-50 text-emerald-700 border-emerald-200",
+                structure: "bg-sky-50 text-sky-700 border-sky-200",
+                time:      "bg-stone-100 text-stone-700 border-stone-200",
+                execution: "bg-amber-50 text-amber-700 border-amber-200",
+            }[family] || "bg-stone-100 text-stone-700 border-stone-200";
+        }
+     }'>
+    <span class="text-[10px] uppercase tracking-wider text-stone-500 mr-1">Setup</span>
+    <template x-for="t in tags" :key="t.tag">
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded border mono"
+              :class="familyColor((catalog[t.tag] || {}).family)"
+              :title="(catalog[t.tag] || {}).label + ' · source: ' + t.source">
+            <span x-text="(catalog[t.tag] || { label: t.tag }).label"></span>
+            <button type="button" @click="removeTag(t.tag)"
+                    class="text-stone-400 hover:text-red-600 leading-none">×</button>
+        </span>
+    </template>
+    <template x-if="!adding">
+        <button type="button" @click="adding = true"
+                class="text-stone-500 hover:text-stone-900 px-2 py-0.5 rounded border border-dashed border-stone-300">
+            + tag
+        </button>
+    </template>
+    <template x-if="adding">
+        <span class="inline-flex items-center gap-1">
+            <select x-model="candidate"
+                    class="text-[11px] mono px-1.5 py-0.5 border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+                <option value="">— pick —</option>
+                <template x-for="(meta, key) in catalog" :key="key">
+                    <option :value="key"
+                            x-text="meta.label + ' (' + meta.family + ')'"
+                            :disabled="tags.some(t => t.tag === key)"></option>
+                </template>
+            </select>
+            <button type="button" @click="addTag()"
+                    class="text-[11px] px-2 py-0.5 bg-emerald-600 text-white rounded hover:bg-emerald-700">add</button>
+            <button type="button" @click="adding = false; candidate = ''"
+                    class="text-[11px] text-stone-500 hover:text-stone-900">cancel</button>
+        </span>
+    </template>
+</div>
+{% endif %}
+
 <!-- Two-column layout: lifecycle (left), context (right) -->
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 

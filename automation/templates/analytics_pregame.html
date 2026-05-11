@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+{# Pregame accuracy — closes the loop between what the daily pregame
+   analysis recommended and what actually happened.
+   Two rollups:
+     1. Calibration: by LIKE / WATCH / PASS verdict, how do the trades
+        you actually took perform?
+     2. Per-pregame detail: each cached pregame with its picks + outcomes.
+#}
+
+<div class="mb-6">
+    <h2 class="text-[15px] font-semibold text-stone-700">Pregame accuracy</h2>
+    <p class="text-[12px] text-stone-500 mt-0.5">
+        {{ data.n_pregames }} cached pregame{{ "s" if data.n_pregames != 1 else "" }} ·
+        {{ data.n_total_picks }} total picks · {{ data.n_taken }} taken.
+        Trades match a pick when ticker + entry-date align.
+    </p>
+</div>
+
+{# Calibration table — is LIKE actually winning more than WATCH? #}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">Verdict calibration</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            For each verdict tier: how many picks were called, how many you took,
+            and how the taken ones performed. If LIKE doesn't out-WR WATCH, the
+            analyst isn't separating signal from noise.
+        </p>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium">Verdict</th>
+                <th class="text-right py-2 font-medium">N picks</th>
+                <th class="text-right py-2 font-medium">N taken</th>
+                <th class="text-right py-2 font-medium">Take rate</th>
+                <th class="text-right py-2 font-medium">Win rate</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-right pr-5 py-2 font-medium">Total P&amp;L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for c in data.calibration %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2 mono font-medium
+                    {% if c.verdict == 'LIKE' %}text-emerald-700
+                    {% elif c.verdict == 'WATCH' %}text-stone-700
+                    {% else %}text-red-700{% endif %}">{{ c.verdict }}</td>
+                <td class="py-2 mono text-right text-stone-700">{{ c.n_picks }}</td>
+                <td class="py-2 mono text-right text-stone-700">{{ c.n_taken }}</td>
+                <td class="py-2 mono text-right text-stone-500">
+                    {% if c.take_rate is not none %}{{ c.take_rate }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right font-medium
+                    {% if c.win_rate and c.win_rate >= 70 %}text-emerald-700
+                    {% elif c.win_rate and c.win_rate < 50 %}text-red-700{% endif %}">
+                    {% if c.win_rate is not none %}{{ c.win_rate }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right
+                    {% if c.median_roi and c.median_roi > 0 %}text-emerald-700
+                    {% elif c.median_roi and c.median_roi < 0 %}text-red-700{% endif %}">
+                    {% if c.median_roi is not none %}{{ "%+.1f"|format(c.median_roi) }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right pr-5
+                    {% if c.total_pnl > 0 %}text-emerald-600 font-medium
+                    {% elif c.total_pnl < 0 %}text-red-600{% endif %}">
+                    {% if c.total_pnl >= 0 %}${{ "%.0f"|format(c.total_pnl) }}{% else %}-${{ "%.0f"|format(c.total_pnl|abs) }}{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{# Per-pregame detail — each cached pregame, with its picks + outcomes #}
+{% if data.pregames %}
+<div class="space-y-3">
+    {% for pg in data.pregames %}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden"
+         x-data="{ open: {{ 'true' if loop.first else 'false' }} }">
+        <button type="button" @click="open = !open"
+                class="w-full px-5 py-3 border-b border-stone-200 flex items-baseline justify-between gap-3 hover:bg-stone-50 text-left">
+            <div class="flex items-baseline gap-3 flex-wrap">
+                <span class="mono font-semibold text-[14px]">{{ pg.date }}</span>
+                <a href="/pregame/{{ pg.date }}"
+                   class="text-[11px] text-emerald-700 hover:underline"
+                   @click.stop>open pregame →</a>
+                {% if pg.conviction %}
+                <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded
+                    {% if pg.conviction == 'high' %}bg-emerald-50 text-emerald-700
+                    {% elif pg.conviction == 'low' %}bg-amber-50 text-amber-700
+                    {% else %}bg-stone-100 text-stone-700{% endif %}">{{ pg.conviction }}</span>
+                {% endif %}
+                {% if pg.headline %}
+                <span class="text-[12px] text-stone-600 italic">{{ pg.headline }}</span>
+                {% endif %}
+            </div>
+            <div class="flex items-baseline gap-3 text-[11px] text-stone-500">
+                <span>{{ pg.n_picks }} picks</span>
+                <span>{{ pg.n_taken }} taken</span>
+                <span class="mono font-medium
+                    {% if pg.total_pnl > 0 %}text-emerald-700
+                    {% elif pg.total_pnl < 0 %}text-red-700{% endif %}">
+                    {% if pg.total_pnl >= 0 %}${{ "%.0f"|format(pg.total_pnl) }}{% else %}-${{ "%.0f"|format(pg.total_pnl|abs) }}{% endif %}
+                </span>
+                <span class="text-stone-400 text-[10px]" x-text="open ? '▾' : '▸'"></span>
+            </div>
+        </button>
+
+        <table class="w-full text-[12px]" x-show="open" x-cloak>
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500 bg-stone-50">
+                <tr>
+                    <th class="text-left  px-5 py-2 font-medium">Ticker</th>
+                    <th class="text-left  py-2 font-medium">Verdict</th>
+                    <th class="text-left  py-2 font-medium">Size</th>
+                    <th class="text-left  py-2 font-medium">Plan</th>
+                    <th class="text-center py-2 font-medium">Took</th>
+                    <th class="text-right py-2 font-medium">Trades</th>
+                    <th class="text-right py-2 font-medium">Median ROI</th>
+                    <th class="text-right pr-5 py-2 font-medium">P&amp;L</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                {% for p in pg.picks %}
+                <tr class="hover:bg-stone-50
+                    {% if p.took and p.winner %}bg-emerald-50/30
+                    {% elif p.took and p.loser %}bg-red-50/30{% endif %}">
+                    <td class="px-5 py-2 mono font-medium">{{ p.ticker }}</td>
+                    <td class="py-2 mono text-[11px]
+                        {% if p.verdict == 'LIKE' %}text-emerald-700
+                        {% elif p.verdict == 'WATCH' %}text-stone-700
+                        {% else %}text-red-700{% endif %}">{{ p.verdict or "—" }}</td>
+                    <td class="py-2 text-[11px] text-stone-500">{{ p.size or "—" }}</td>
+                    <td class="py-2 text-[11px] text-stone-700 max-w-md truncate" :title="p.plan">{{ p.plan or "" }}</td>
+                    <td class="py-2 text-center text-[11px]">
+                        {% if p.took %}
+                            <span class="text-emerald-700">✓</span>
+                        {% else %}
+                            <span class="text-stone-300">·</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-2 mono text-right text-stone-500">{{ p.n_trades if p.took else "—" }}</td>
+                    <td class="py-2 mono text-right
+                        {% if p.median_roi and p.median_roi > 0 %}text-emerald-700
+                        {% elif p.median_roi and p.median_roi < 0 %}text-red-700{% endif %}">
+                        {% if p.median_roi is not none %}{{ "%+.1f"|format(p.median_roi) }}%{% else %}—{% endif %}
+                    </td>
+                    <td class="py-2 mono text-right pr-5
+                        {% if p.total_pnl > 0 %}text-emerald-600 font-medium
+                        {% elif p.total_pnl < 0 %}text-red-600 font-medium{% endif %}">
+                        {% if p.took %}
+                            {% if p.total_pnl >= 0 %}${{ "%.0f"|format(p.total_pnl) }}{% else %}-${{ "%.0f"|format(p.total_pnl|abs) }}{% endif %}
+                        {% else %}<span class="text-stone-300">—</span>{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="bg-white border border-stone-200 rounded-lg p-8 text-center text-sm text-stone-500">
+    No cached pregame analyses yet. Run an analysis on a pregame note to populate this page.
+</div>
+{% endif %}
+
+{% endblock %}
