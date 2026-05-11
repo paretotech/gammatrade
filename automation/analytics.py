@@ -15,8 +15,11 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from statistics import median
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from . import state
+
+_ET = ZoneInfo("America/New_York")
 
 
 def _connect():
@@ -1175,4 +1178,172 @@ def trends_summary(range_key: str = "all", bucket_minutes: int = 5) -> dict:
         "dow_rows": dow_rows,
         "intraday_rows": intraday_rows,
         "scatter": scatter,
+    }
+
+
+# ─── Leakage analysis ─────────────────────────────────────────────────────
+# Two rollups that answer "where am I leaving money on the table?":
+#   1. leakage_scatter — one dot per closed trade plotting in-trade MFE %
+#      against realized %. Below-diagonal cluster = systematic leakage.
+#   2. stop_discipline — for every Stop fill (price < max(entry, prev TP)),
+#      look at the next N trading minutes in the cached Polygon bars and
+#      measure how often the option recovered to entry or to the floor it
+#      breached. Quantifies "I always stop right before the rally" feels
+#      with an actual percentage.
+
+def leakage_scatter(range_key: str = "all") -> list[dict]:
+    """One dot per closed trade for the MFE-vs-realized scatter plot."""
+    trades = closed_trades(limit=5000, range_key=range_key)
+    out = []
+    for t in trades:
+        if t.get("mfe_in_pct") is None or t.get("actual_pct") is None:
+            continue
+        out.append({
+            "intent_id":    t["intent_id"],
+            "ticker":       t["ticker"],
+            "mfe":          t["mfe_in_pct"],
+            "realized":     t["actual_pct"],
+            "realized_pnl": t["realized_pnl"],
+            "win":          t["realized_pnl"] > 0,
+            "first_entry":  t.get("first_entry_ts"),
+        })
+    return out
+
+
+def _parse_et_ts(ts: str) -> Optional[datetime]:
+    """Naive fill timestamps are broker-local (ET). Localize explicitly."""
+    if not ts:
+        return None
+    try:
+        d = datetime.fromisoformat(ts[:19])
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_ET)
+    return d
+
+
+def stop_discipline(range_key: str = "all",
+                    lookback_minutes: int = 60) -> dict:
+    """For every stop fill across closed trades, look at the next
+    `lookback_minutes` trading minutes in the cached bars and report:
+      - how often the option recovered to the entry price
+      - how often it recovered to the floor it breached (max of entry
+        and prior TP) — the "ideal" exit reference
+      - the median minutes from stop to the post-stop high
+      - the median peak-vs-stop give-back, expressed as a % of entry
+    """
+    from src import bars_store
+    from src.contract_symbols import build_occ_symbol
+
+    trades = closed_trades(limit=5000, range_key=range_key)
+
+    # Phase 1 — identify stop fills using the same rule the chart uses
+    # (an exit whose price is below max(entry, last classified TP price)).
+    stops: list[dict] = []
+    for t in trades:
+        with _connect() as conn:
+            fills = conn.execute(
+                "SELECT ts, contracts, price, is_entry, tp_tier "
+                "FROM fills WHERE intent_id=? ORDER BY ts ASC, rowid ASC",
+                (t["intent_id"],),
+            ).fetchall()
+
+        entry_price   = None
+        prev_tp_price = None
+        for f in fills:
+            price = float(f["price"])
+            if f["is_entry"] == 1:
+                if entry_price is None:
+                    entry_price = price
+                continue
+            refs  = [v for v in (entry_price, prev_tp_price) if v is not None]
+            floor = max(refs) if refs else None
+            if floor is not None and price < floor:
+                stops.append({
+                    "intent_id":   t["intent_id"],
+                    "ticker":      t["ticker"],
+                    "expiry":      t.get("expiry"),
+                    "strike":      t.get("strike"),
+                    "right":       t.get("right"),
+                    "stop_ts":     f["ts"],
+                    "stop_price":  price,
+                    "entry_price": entry_price,
+                    "floor":       floor,
+                })
+            elif f["tp_tier"]:
+                prev_tp_price = price
+
+    # Phase 2 — for each stop, look up bars and compute recovery stats.
+    bars_cache: dict[str, Any] = {}
+    results: list[dict] = []
+    for s in stops:
+        try:
+            occ = build_occ_symbol(
+                s["ticker"], date.fromisoformat(str(s["expiry"])[:10]),
+                s["right"], float(s["strike"]),
+            )
+        except (ValueError, TypeError):
+            continue
+        df = bars_cache.get(occ)
+        if df is None:
+            try:
+                df = bars_store.load_option_bars(occ)
+            except FileNotFoundError:
+                continue
+            bars_cache[occ] = df
+        if df is None or df.empty:
+            continue
+
+        stop_dt = _parse_et_ts(s["stop_ts"])
+        if stop_dt is None:
+            continue
+        stop_ms = int(stop_dt.timestamp() * 1000)
+        end_ms  = stop_ms + lookback_minutes * 60_000
+
+        post = df[(df["t"] > stop_ms) & (df["t"] <= end_ms)].dropna(subset=["h"])
+        if post.empty:
+            continue
+        idx_high = post["h"].idxmax()
+        max_high = float(post.loc[idx_high, "h"])
+        peak_ms  = int(post.loc[idx_high, "t"])
+        mins_to_peak = (peak_ms - stop_ms) / 60_000
+
+        results.append({
+            **s,
+            "post_max":           round(max_high, 2),
+            "recovered_to_entry": max_high >= s["entry_price"],
+            "recovered_to_floor": max_high >= s["floor"],
+            "mins_to_peak":       round(mins_to_peak, 1),
+            # Give-back as % of entry: how much higher the peak got vs the
+            # price you stopped at. Positive = you stopped before the rally.
+            "giveback_pct":       round(
+                (max_high - s["stop_price"]) / s["entry_price"] * 100, 1
+            ),
+        })
+
+    n = len(results)
+    if n == 0:
+        return {
+            "n":                   0,
+            "lookback_minutes":    lookback_minutes,
+            "recent":              [],
+        }
+
+    return {
+        "n":                       n,
+        "n_stops_total":           len(stops),
+        "lookback_minutes":        lookback_minutes,
+        "pct_recovered_to_entry":  round(
+            sum(1 for r in results if r["recovered_to_entry"]) / n * 100, 1),
+        "pct_recovered_to_floor":  round(
+            sum(1 for r in results if r["recovered_to_floor"]) / n * 100, 1),
+        "median_mins_to_peak":     round(
+            median(r["mins_to_peak"] for r in results), 1),
+        "median_giveback_pct":     round(
+            median(r["giveback_pct"] for r in results), 1),
+        "avg_giveback_pct":        round(
+            sum(r["giveback_pct"] for r in results) / n, 1),
+        # 20 most recent stops for the detail table.
+        "recent": sorted(results, key=lambda r: r["stop_ts"], reverse=True)[:20],
     }

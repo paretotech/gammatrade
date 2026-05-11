@@ -1645,6 +1645,35 @@ async def analytics_sectors(request: Request, range: Optional[str] = None) -> HT
     )
 
 
+@app.get("/analytics/leakage", response_class=HTMLResponse)
+async def analytics_leakage(
+    request: Request,
+    range: Optional[str] = None,
+    lookback: Optional[int] = None,
+) -> HTMLResponse:
+    """Two rollups in one page:
+      - MFE-vs-realized scatter (one dot per closed trade)
+      - Stop-discipline aggregate (recovery stats per Stop fill)
+    """
+    from . import analytics as _a
+    rng = _norm_range(range)
+    lb  = lookback if lookback in (30, 60, 120, 240) else 60
+    return TEMPLATES.TemplateResponse(
+        "analytics_leakage.html",
+        {
+            "request":          request,
+            "page_title":       "Analytics",
+            "active_tab":       "leakage",
+            "tab_slug":         "leakage",
+            "range_key":        rng,
+            "lookback_minutes": lb,
+            "scatter":          _a.leakage_scatter(range_key=rng),
+            "discipline":       _a.stop_discipline(range_key=rng, lookback_minutes=lb),
+            **nav_context(),
+        },
+    )
+
+
 @app.get("/analytics/trends", response_class=HTMLResponse)
 async def analytics_trends(
     request: Request,
