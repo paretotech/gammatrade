@@ -8,7 +8,15 @@
 
 <div class="bg-white border border-stone-200 rounded-lg p-6 max-w-2xl">
 
-    {% if prefill.ticker %}
+    {% if prefill.source == 'brando' %}
+    <div class="bg-violet-50 border border-violet-200 rounded-md px-4 py-2.5 mb-5 text-sm flex items-center justify-between">
+        <div>
+            <span class="text-violet-700 font-medium">Staged from Brando alert</span>
+            <span class="text-stone-600 ml-2 mono">{{ prefill.ticker }} {{ prefill.default_expiry }} {{ "%g"|format(prefill.default_strike) }}{{ prefill.default_right }}{% if prefill.limit_price %} @ ${{ prefill.limit_price }}{% endif %}</span>
+        </div>
+        <a href="/" class="text-[12px] text-violet-700 hover:underline">← dashboard</a>
+    </div>
+    {% elif prefill.ticker %}
     <div class="bg-emerald-50 border border-emerald-200 rounded-md px-4 py-2.5 mb-5 text-sm flex items-center justify-between">
         <div>
             <span class="text-emerald-700 font-medium">Promoted from pregame</span>
@@ -62,12 +70,13 @@
         <!-- Order -->
         <div>
             <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Order</div>
-            <div class="grid grid-cols-12 gap-2" x-data="{type: 'MKT'}">
+            <div class="grid grid-cols-12 gap-2" x-data="{type: '{{ prefill.order_type or "MKT" }}'}">
                 <select name="order_type" x-model="type" class="col-span-4 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
-                    <option value="MKT">Market</option>
-                    <option value="LMT">Limit</option>
+                    <option value="MKT" {% if prefill.order_type != 'LMT' %}selected{% endif %}>Market</option>
+                    <option value="LMT" {% if prefill.order_type == 'LMT' %}selected{% endif %}>Limit</option>
                 </select>
                 <input type="number" step="0.01" name="limit_price" placeholder="limit price (e.g. 3.50)"
+                       value="{{ prefill.limit_price if prefill.limit_price is not none else '' }}"
                        :disabled="type === 'MKT'"
                        class="col-span-5 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:bg-stone-100 disabled:text-stone-400">
                 <input type="number" name="contracts" required value="1" min="1"
@@ -79,7 +88,7 @@
 
         <!-- Trigger condition (primary + optional extras) -->
         <div x-data="{
-                useTrigger: true,
+                useTrigger: {{ 'false' if prefill.source == 'brando' else 'true' }},
                 extras: {{ prefill.extras_json or '[]' }},
                 addExtra(t) { this.extras.push({ticker: t || '', direction: 'above', level: ''}); },
                 removeExtra(i) { this.extras.splice(i, 1); },

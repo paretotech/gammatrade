@@ -277,12 +277,15 @@ class IBKRBroker:
             "whatIf": getattr(order, "whatIf", False),
         }
 
-    async def submit_entry(self, intent: "TradeIntent") -> dict:
-        """Submit an entry order. In readonly mode → whatIfOrderAsync (dry
-        run). In writable mode → placeOrder (Phase 1, not yet wired).
+    async def submit_entry(self, intent: "TradeIntent",
+                              force_dry_run: bool = False) -> dict:
+        """Submit an entry order. In readonly mode OR when force_dry_run=True
+        → whatIfOrderAsync (no order placed). In writable mode AND
+        force_dry_run=False → placeOrder (real placement).
 
-        Returns a structured dict with contract resolution, order spec, and
-        — in readonly mode — the simulated margin/commission impact.
+        Callers that surface a "dry-run" button must pass force_dry_run=True
+        so the broker's writable state cannot accidentally promote a UI
+        dry-run into a real order.
         """
         if not self.connected or self._ib is None:
             return {"status": "error", "error": "Broker not connected"}
@@ -330,7 +333,7 @@ class IBKRBroker:
             order = MarketOrder(action, qty)
 
         # 4. Branch: dry-run vs real order placement
-        if self.readonly:
+        if self.readonly or force_dry_run:
             # Brief market-data ping so IBKR can compute margin/commission.
             # Without a subscribed quote, whatIf returns empty values for
             # options. Snapshot is enough; we don't need streaming.
@@ -376,11 +379,53 @@ class IBKRBroker:
                 },
             }
 
-        # writable mode — actual placement (Phase 1)
+        # writable mode — actual placement
         self._assert_writable("submit_entry")
-        raise NotImplementedError(
-            "IBKRBroker.submit_entry placeOrder path not yet wired (Phase 1)."
-        )
+
+        try:
+            trade = self._ib.placeOrder(contract, order)
+        except Exception as e:
+            return {"status": "error",
+                    "error": f"placeOrder failed: {type(e).__name__}: {e}",
+                    "contract": self._serialize_contract(contract),
+                    "order": self._serialize_order(order)}
+
+        # Wait briefly for IBKR to move past PendingSubmit. We don't block on
+        # Filled — a working LMT may sit; caller polls via /positions later.
+        deadline = asyncio.get_event_loop().time() + 5.0
+        terminal_or_live = {"Submitted", "PreSubmitted", "Filled",
+                            "Cancelled", "Inactive", "ApiCancelled"}
+        while asyncio.get_event_loop().time() < deadline:
+            if trade.orderStatus.status in terminal_or_live:
+                break
+            await asyncio.sleep(0.1)
+
+        avg = trade.orderStatus.avgFillPrice
+        telemetry.log_event("entry_submitted", {
+            "backend": "ibkr",
+            "mode": self.mode,
+            "ticker": intent.ticker,
+            "conId": contract.conId,
+            "order_id": trade.order.orderId,
+            "perm_id": trade.order.permId,
+            "qty": qty,
+            "order_type": order_type,
+            "status": trade.orderStatus.status,
+            "filled": trade.orderStatus.filled,
+            "avg_fill_price": avg or None,
+        })
+
+        return {
+            "status": "placed",
+            "broker_status": trade.orderStatus.status,
+            "order_id": trade.order.orderId,
+            "perm_id": trade.order.permId,
+            "filled": trade.orderStatus.filled,
+            "remaining": trade.orderStatus.remaining,
+            "avg_fill_price": avg if avg else None,
+            "contract": self._serialize_contract(contract),
+            "order": self._serialize_order(order),
+        }
 
     async def dry_run_tp_orders(self, intent: "TradeIntent",
                                   tp_orders: list[dict]) -> list[dict]:

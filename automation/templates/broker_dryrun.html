@@ -112,6 +112,43 @@
     </form>
 </div>
 
+<!-- Live execution result (after /settings/broker/execute) -->
+{% if execute_result %}
+<div class="max-w-3xl mb-6">
+    {% if execute_result.status == 'placed' %}
+    <div class="bg-emerald-50 border-2 border-emerald-300 rounded-lg p-5">
+        <div class="flex items-center gap-2 mb-2">
+            <div class="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
+            <span class="text-emerald-800 text-sm font-semibold">Order placed on IBKR</span>
+            <span class="ml-auto text-[11px] uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-medium">{{ broker.mode }}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-y-2 gap-x-8 text-sm mt-3">
+            <div><span class="text-stone-500">order_id:</span> <span class="mono font-medium">{{ execute_result.order_id }}</span></div>
+            <div><span class="text-stone-500">perm_id:</span> <span class="mono">{{ execute_result.perm_id }}</span></div>
+            <div><span class="text-stone-500">broker_status:</span> <span class="mono font-medium">{{ execute_result.broker_status }}</span></div>
+            <div><span class="text-stone-500">filled / remaining:</span> <span class="mono">{{ execute_result.filled }} / {{ execute_result.remaining }}</span></div>
+            {% if execute_result.avg_fill_price %}
+            <div><span class="text-stone-500">avg fill:</span> <span class="mono">${{ "%.2f"|format(execute_result.avg_fill_price) }}</span></div>
+            {% endif %}
+            <div><span class="text-stone-500">conId:</span> <span class="mono">{{ execute_result.contract.conId }}</span></div>
+        </div>
+        <div class="text-[11px] text-stone-600 mt-3 pt-3 border-t border-emerald-200 leading-relaxed">
+            Track the order in IB Gateway (Orders/Trades tab) or via your positions page. If broker_status is
+            <span class="mono">Submitted</span> or <span class="mono">PreSubmitted</span>, it's working at the exchange.
+        </div>
+    </div>
+    {% else %}
+    <div class="bg-red-50 border-2 border-red-300 rounded-lg p-5">
+        <div class="flex items-center gap-2 mb-1">
+            <div class="w-2.5 h-2.5 rounded-full bg-red-500"></div>
+            <span class="text-red-800 text-sm font-semibold">Execute failed — no order placed</span>
+        </div>
+        <div class="text-[13px] text-red-900 mono leading-relaxed mt-2">{{ execute_result.error }}</div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
 <!-- Result -->
 {% if result %}
 <div class="max-w-3xl">
@@ -139,6 +176,63 @@
         </div>
         <div class="text-[12px] text-emerald-700 mt-1">No order was placed.</div>
     </div>
+
+    <!-- Execute live panel — promote the same order to placement -->
+    <div class="bg-white border-2 {% if broker.readonly %}border-stone-200{% else %}border-amber-300{% endif %} rounded-lg p-5 mb-4">
+        <div class="flex items-baseline justify-between mb-3">
+            <div class="text-[11px] uppercase tracking-wider {% if broker.readonly %}text-stone-500{% else %}text-amber-700{% endif %} font-medium">
+                {% if broker.readonly %}Live execution (disabled){% else %}⚠ Execute this exact order on IBKR{% endif %}
+            </div>
+            {% if not broker.readonly %}
+            <span class="text-[11px] uppercase tracking-wider px-2 py-0.5 rounded {% if broker.mode == 'live' %}bg-red-100 text-red-800{% else %}bg-emerald-100 text-emerald-800{% endif %} font-medium">
+                {{ broker.mode }}
+            </span>
+            {% endif %}
+        </div>
+
+        {% if broker.readonly %}
+        <p class="text-[13px] text-stone-600 leading-relaxed">
+            Broker is in <span class="mono font-medium">read-only</span> mode — orders cannot be placed.
+            Restart the server with <span class="mono">BROKER_READONLY=0</span> to enable execution:
+        </p>
+        <pre class="bg-stone-100 rounded px-3 py-2 mt-2 text-[12px] mono leading-relaxed overflow-x-auto">pkill -f "automation.server"
+export BROKER=ibkr_paper
+export BROKER_READONLY=0
+python3 -m automation.server</pre>
+        {% else %}
+        <p class="text-[13px] text-stone-700 leading-relaxed mb-3">
+            Submits the same contract + order spec verified above to IBKR via
+            <span class="mono">placeOrder</span>. This is a real order on your
+            <span class="font-medium {% if broker.mode == 'live' %}text-red-700{% else %}text-emerald-700{% endif %}">{{ broker.mode }}</span> account.
+        </p>
+
+        <form method="post" action="/settings/broker/execute" class="space-y-3">
+            <input type="hidden" name="ticker" value="{{ submitted.ticker }}">
+            <input type="hidden" name="expiry" value="{{ submitted.expiry }}">
+            <input type="hidden" name="strike" value="{{ submitted.strike }}">
+            <input type="hidden" name="right" value="{{ submitted.right }}">
+            <input type="hidden" name="contracts" value="{{ submitted.contracts }}">
+            <input type="hidden" name="order_type" value="{{ submitted.order_type }}">
+            <input type="hidden" name="limit_price" value="{{ submitted.limit_price or '' }}">
+
+            <label class="flex items-start gap-2 cursor-pointer">
+                <input type="checkbox" name="confirm_execute" value="yes" required
+                       class="mt-0.5 rounded border-stone-300 text-amber-600 focus:ring-amber-500">
+                <span class="text-[13px] text-stone-700 leading-relaxed">
+                    I confirm I want to place
+                    <span class="mono font-medium">{{ submitted.order_type }} BUY {{ submitted.contracts }}× {{ submitted.ticker }} {{ submitted.expiry }} {{ "%.1f"|format(submitted.strike|float) }}{{ submitted.right }}</span>{% if submitted.limit_price %} @ <span class="mono font-medium">${{ submitted.limit_price }}</span>{% endif %}
+                    on the <span class="font-medium">{{ broker.mode }}</span> account.
+                </span>
+            </label>
+
+            <button type="submit"
+                    class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-md text-sm font-medium">
+                Place order on IBKR →
+            </button>
+        </form>
+        {% endif %}
+    </div>
+
 
     <!-- Resolved contract -->
     <div class="bg-white border border-stone-200 rounded-lg p-5 mb-4">

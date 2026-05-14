@@ -148,3 +148,68 @@ def _next_friday_on_or_after(d: date) -> date:
     # Monday=0 ... Friday=4, Sunday=6
     offset = (4 - d.weekday()) % 7
     return d + timedelta(days=offset)
+
+
+# Discord alert format from Brando's EliteOptions feed. Examples:
+#   "@Elite BOUGHT |  QQQ MAY 15 712C $3.87"
+#   "@Elite BOUGHT | NVDA MAY 15 225C $3.20"
+#   "@Elite SOLD | SPY JUN 21 590P"   (no fill price = exit alert)
+# The mention may be @Elite, @everyone, or a role like <@&123>; we tolerate
+# anything before the action verb. Expiry has no year — caller passes the
+# alert date and we resolve to the next occurrence of (mon, day) on or after it.
+_BRANDO_DISCORD_RE = re.compile(
+    r"""
+    (?:@\S+|<@[!&]?\d+>)\s+              # role/user mention
+    (?P<action>[A-Z]+)\s*\|\s*           # BOUGHT / SOLD / TRIMMED / STOPPED
+    (?P<ticker>[A-Z]{1,6})\s+
+    (?P<mon>[A-Z]{3})\s+(?P<day>\d{1,2})\s+
+    (?P<strike>\d+(?:\.\d+)?)(?P<opt>[CP])
+    (?:\s+\$?(?P<price>\d+(?:\.\d+)?))?  # optional fill price
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class BrandoAlert:
+    action: str               # "BOUGHT" | "SOLD" | "TRIMMED" | ...
+    contract: OptionContract
+    fill_price: Optional[float]
+
+
+def parse_brando_discord_alert(text: str, alert_date: date) -> BrandoAlert:
+    """Parse a Brando-style Discord alert.
+
+    Resolves the year-less ``MON DAY`` expiry to the next such date on or
+    after ``alert_date``. This handles the December-alert / January-expiry
+    case correctly without needing the alert's year encoded separately.
+    """
+    m = _BRANDO_DISCORD_RE.search(text)
+    if not m:
+        raise ValueError(f"not a Brando-style alert: {text!r}")
+
+    month = _MONTHS.get(m.group("mon").upper())
+    if month is None:
+        raise ValueError(f"bad month in {text!r}")
+    day = int(m.group("day"))
+
+    year = alert_date.year
+    try:
+        expiry = date(year, month, day)
+    except ValueError as e:
+        raise ValueError(f"invalid expiry date in {text!r}: {e}") from e
+    if expiry < alert_date:
+        expiry = date(year + 1, month, day)
+
+    contract = OptionContract(
+        ticker=m.group("ticker").upper(),
+        expiry=expiry,
+        option_type=m.group("opt").upper(),
+        strike=float(m.group("strike")),
+    )
+    price = m.group("price")
+    return BrandoAlert(
+        action=m.group("action").upper(),
+        contract=contract,
+        fill_price=float(price) if price else None,
+    )
