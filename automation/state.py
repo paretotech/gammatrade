@@ -191,6 +191,37 @@ CREATE TABLE IF NOT EXISTS reference_trades (
     lotto INTEGER DEFAULT 0
 );
 
+-- Setup tags per trade. Multi-label: one trade can carry several tags
+-- (e.g. "ath_break" + "chain_starter" + "0dte"). Sources:
+--   'auto' — assigned by the rule-based tagger (tagging.auto_tag)
+--   'ai'   — assigned by the Claude-based tagger (tagging.ai_tag)
+--   'manual' — set by the user on the trade-detail page
+CREATE TABLE IF NOT EXISTS trade_tags (
+    intent_id  TEXT NOT NULL,
+    tag        TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'auto',
+    confidence REAL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (intent_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_trade_tags_intent ON trade_tags(intent_id);
+CREATE INDEX IF NOT EXISTS idx_trade_tags_tag    ON trade_tags(tag);
+
+-- Per-ticker support/resistance levels, sourced from a chartist's daily
+-- snapshots. Each row is one (ticker, asof_ts) snapshot — we keep history
+-- so we can see how levels evolved, but the application normally queries
+-- "latest per ticker" (see analytics.latest_levels).
+CREATE TABLE IF NOT EXISTS ticker_levels (
+    ticker        TEXT NOT NULL,
+    asof_ts       TEXT NOT NULL,       -- ISO timestamp of when the snapshot was published
+    current_price REAL,
+    levels_below  TEXT,                -- pipe-separated floats, ascending toward current
+    levels_above  TEXT,                -- pipe-separated floats, ascending away from current
+    source        TEXT,                -- 'discord_import' | 'manual' | other
+    note          TEXT,                -- free-text (e.g. originating message_id)
+    PRIMARY KEY (ticker, asof_ts)
+);
+
 CREATE INDEX IF NOT EXISTS idx_intents_status ON trade_intents(status);
 CREATE INDEX IF NOT EXISTS idx_orders_intent ON orders(intent_id);
 CREATE INDEX IF NOT EXISTS idx_fills_intent ON fills(intent_id);
@@ -198,6 +229,7 @@ CREATE INDEX IF NOT EXISTS idx_triggers_status ON triggers(status);
 CREATE INDEX IF NOT EXISTS idx_triggers_ticker ON triggers(ticker);
 CREATE INDEX IF NOT EXISTS idx_ref_ticker ON reference_trades(ticker);
 CREATE INDEX IF NOT EXISTS idx_ref_regime ON reference_trades(regime);
+CREATE INDEX IF NOT EXISTS idx_levels_ticker ON ticker_levels(ticker);
 """
 
 

@@ -1,15 +1,14 @@
 {
     "name": "gammatrade",
-    "version": "0.1.0",
+    "version": "0.3.1",
     "description": "Notion-style options trading dashboard with broker-CSV import, analytics, and Claude-powered pregame analysis. Runs locally as a FastAPI webapp; integrates with Claude Code for trade-decision support.",
-    "author": "paretotech",
+    "author": {
+        "name": "paretotech",
+        "url": "https://github.com/paretotech"
+    },
     "homepage": "https://github.com/paretotech/gammatrade",
     "license": "MIT",
     "keywords": ["trading", "options", "analytics", "tdameritrade", "ibkr", "polygon"],
-    "hooks": {
-        "post-install": "bash hooks/post-install.sh",
-        "post-update": "bash hooks/post-install.sh"
-    },
     "commands_dir": "commands",
     "skills_dir": "skills",
     "ports": [8765],

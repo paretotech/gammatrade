@@ -21,8 +21,7 @@ Steps:
 5. Save the result to `data/pregames/<date>.analysis.json` for the webapp to display
 
 ```bash
-PLUGIN_DIR="${CLAUDE_PLUGIN_DIR:-$HOME/.claude/plugins/gammatrade}"
-cd "$PLUGIN_DIR"
+cd "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT not set — run this as a slash command}"
 
 PREGAME_PATH="${1:-}"
 if [ -z "$PREGAME_PATH" ]; then

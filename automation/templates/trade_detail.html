@@ -1,0 +1,677 @@
+{% extends "base.html" %}
+
+{% block page_meta %}
+<a href="/analytics/trades" class="text-stone-500 text-sm hover:text-stone-900">← trade log</a>
+{% endblock %}
+
+{% block content %}
+
+{% set t = trade or raw_intent %}
+
+<!-- Header -->
+<div class="flex items-baseline justify-between flex-wrap gap-3 mb-6">
+    <div>
+        <h1 class="text-xl font-semibold text-stone-900 mono">
+            {{ t.ticker }}
+            {% if t.strike == t.strike|int %}{{ t.strike|int }}{% else %}{{ t.strike }}{% endif %}{{ t.right }}
+            <span class="text-stone-400 text-sm font-normal">exp {{ t.expiry }}</span>
+        </h1>
+        <div class="text-[12px] text-stone-500 mt-0.5">
+            intent {{ intent_id }}
+            {% if trade %} · {{ trade.entry_qty }} contracts · status <span class="mono">{{ raw_intent.status }}</span>
+            {% else %} · still open · status <span class="mono">{{ raw_intent.status }}</span>{% endif %}
+        </div>
+    </div>
+    {% if trade %}
+    <div class="text-right">
+        <div class="text-[11px] uppercase tracking-wider text-stone-500">Realized</div>
+        <div class="text-2xl font-semibold mono {% if trade.realized_pnl > 0 %}text-emerald-600{% elif trade.realized_pnl < 0 %}text-red-600{% endif %}">
+            {% if trade.realized_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(trade.realized_pnl) }}
+        </div>
+        <div class="text-[11px] mono text-stone-500">
+            {% if trade.roi >= 0 %}+{% endif %}{{ "%.1f"|format(trade.roi * 100) }}% ROI
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Setup tags — rule-based + manual additions -->
+{% if trade_tags or tag_catalog %}
+<div class="flex flex-wrap items-center gap-1.5 mb-5 text-[11px]"
+     x-data='{
+        tags: {{ trade_tags | tojson }},
+        catalog: {{ tag_catalog | tojson }},
+        adding: false,
+        candidate: "",
+        async addTag() {
+            if (!this.candidate) return;
+            const form = new FormData();
+            form.append("tag", this.candidate);
+            const res = await fetch("/api/tags/{{ intent_id }}", { method: "POST", body: form });
+            if (res.ok) { this.tags = (await res.json()).tags; this.candidate = ""; this.adding = false; }
+        },
+        async removeTag(tag) {
+            const form = new FormData();
+            form.append("tag", tag);
+            const res = await fetch("/api/tags/{{ intent_id }}/remove", { method: "POST", body: form });
+            if (res.ok) this.tags = (await res.json()).tags;
+        },
+        familyColor(family) {
+            return {
+                level:     "bg-emerald-50 text-emerald-700 border-emerald-200",
+                structure: "bg-sky-50 text-sky-700 border-sky-200",
+                time:      "bg-stone-100 text-stone-700 border-stone-200",
+                execution: "bg-amber-50 text-amber-700 border-amber-200",
+            }[family] || "bg-stone-100 text-stone-700 border-stone-200";
+        }
+     }'>
+    <span class="text-[10px] uppercase tracking-wider text-stone-500 mr-1">Setup</span>
+    <template x-for="t in tags" :key="t.tag">
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded border mono"
+              :class="familyColor((catalog[t.tag] || {}).family)"
+              :title="(catalog[t.tag] || {}).label + ' · source: ' + t.source">
+            <span x-text="(catalog[t.tag] || { label: t.tag }).label"></span>
+            <button type="button" @click="removeTag(t.tag)"
+                    class="text-stone-400 hover:text-red-600 leading-none">×</button>
+        </span>
+    </template>
+    <template x-if="!adding">
+        <button type="button" @click="adding = true"
+                class="text-stone-500 hover:text-stone-900 px-2 py-0.5 rounded border border-dashed border-stone-300">
+            + tag
+        </button>
+    </template>
+    <template x-if="adding">
+        <span class="inline-flex items-center gap-1">
+            <select x-model="candidate"
+                    class="text-[11px] mono px-1.5 py-0.5 border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+                <option value="">— pick —</option>
+                <template x-for="(meta, key) in catalog" :key="key">
+                    <option :value="key"
+                            x-text="meta.label + ' (' + meta.family + ')'"
+                            :disabled="tags.some(t => t.tag === key)"></option>
+                </template>
+            </select>
+            <button type="button" @click="addTag()"
+                    class="text-[11px] px-2 py-0.5 bg-emerald-600 text-white rounded hover:bg-emerald-700">add</button>
+            <button type="button" @click="adding = false; candidate = ''"
+                    class="text-[11px] text-stone-500 hover:text-stone-900">cancel</button>
+        </span>
+    </template>
+</div>
+{% endif %}
+
+<!-- Two-column layout: lifecycle (left), context (right) -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- LEFT — lifecycle (fills + MFE/MAE) -->
+    <div class="lg:col-span-2 space-y-6">
+
+        <!-- Price lifecycle chart -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5"
+             x-data="tradeChart('{{ intent_id }}')"
+             x-init="load()">
+            <div class="flex items-baseline justify-between mb-3">
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium">
+                    Option price · entry → last exit
+                </div>
+                <div class="text-[11px] text-stone-400" x-show="status === 'ok'">
+                    <span class="mono" x-text="occ"></span>
+                    · <span x-text="bars.length + ' min bars'"></span>
+                </div>
+            </div>
+
+            <div x-show="status === 'loading'" class="text-[12px] text-stone-400 py-12 text-center">
+                loading bars…
+            </div>
+            <div x-show="status === 'missing'" class="text-[12px] text-stone-500 py-8 text-center">
+                No cached price bars for <span class="mono" x-text="occ || '(this contract)'"></span>.
+                Run the Polygon backfill on
+                <a href="/settings/keys" class="text-emerald-700 hover:underline">Settings → API keys</a>.
+            </div>
+            <div x-show="status === 'error'" class="text-[12px] text-red-600 py-8 text-center">
+                <span x-text="errorMsg"></span>
+            </div>
+
+            <!-- Capture summary — horizontal strip ABOVE the chart canvas.
+                 Stays inside the chart card so the stats and the visual sit
+                 together, but doesn't overlap the drawing area. -->
+            <div x-show="status === 'ok' && stats && (stats.realized_pct != null || stats.mfe_in_pct != null)"
+                 class="flex flex-wrap items-baseline gap-x-6 gap-y-1 mb-4 pb-3 border-b border-stone-100">
+                <div>
+                    <span class="text-stone-500 text-[10px] uppercase tracking-wider mr-1.5">Realized</span>
+                    <span class="mono text-sm font-semibold"
+                          x-show="stats.realized_pct != null"
+                          :class="stats.realized_pct >= 0 ? 'text-emerald-700' : 'text-red-700'"
+                          x-text="(stats.realized_pct >= 0 ? '+' : '') + stats.realized_pct?.toFixed(1) + '%'"></span>
+                    <span class="mono text-sm text-stone-400" x-show="stats.realized_pct == null">—</span>
+                </div>
+                <div>
+                    <span class="text-stone-500 text-[10px] uppercase tracking-wider mr-1.5">MFE in-trade</span>
+                    <span class="mono text-sm font-semibold text-fuchsia-700"
+                          x-text="stats.mfe_in_pct != null ? ('+' + stats.mfe_in_pct.toFixed(1) + '%') : '—'"></span>
+                </div>
+                <!-- Only show the to-expiry MFE pill when it's meaningfully higher
+                     than the in-trade MFE (>5 pts) AND happened well after exit. -->
+                <div x-show="stats.mfe_exp_pct != null
+                             && stats.mfe_exp_pct > (stats.mfe_in_pct || 0) + 5
+                             && (stats.days_to_peak || 0) > 0.2">
+                    <span class="text-stone-500 text-[10px] uppercase tracking-wider mr-1.5">MFE to-expiry</span>
+                    <span class="mono text-sm font-semibold text-fuchsia-700"
+                          x-text="'+' + stats.mfe_exp_pct?.toFixed(1) + '%'"></span>
+                    <span class="text-stone-400 text-[10px] mono ml-1"
+                          x-text="stats.days_to_peak ? ('+' + Math.round(stats.days_to_peak) + 'd') : ''"></span>
+                </div>
+                <div x-show="stats.capture_pct != null" class="ml-auto">
+                    <span class="text-stone-500 text-[10px] uppercase tracking-wider mr-1.5">Captured</span>
+                    <span class="mono text-sm font-semibold text-stone-900"
+                          x-text="Math.round(stats.capture_pct) + '%'"></span>
+                </div>
+            </div>
+
+            <div x-show="status === 'ok'" class="relative" style="height: 280px;">
+                <canvas x-ref="canvas"></canvas>
+            </div>
+
+            <!-- Marker legend -->
+            <div x-show="status === 'ok'" class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-[11px] text-stone-600">
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-600"></span> Entry
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-sky-500"></span> TP1
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-indigo-500"></span> TP2
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-violet-600"></span> TP3
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span> Stop
+                    <span class="text-stone-400 text-[10px]">(below entry / prior TP)</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500"></span> Close
+                </span>
+                <span class="inline-flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5"
+                          style="background: rgb(217, 70, 239); clip-path: polygon(50% 0, 100% 100%, 0 100%);"></span>
+                    MFE peak
+                    <span class="text-stone-400 text-[10px]">(max favorable, in trade)</span>
+                </span>
+            </div>
+        </div>
+
+        <!-- Fill ladder -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Fill ladder</div>
+            {% if fills %}
+            <table class="w-full text-[12px] mono">
+                <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+                    <tr>
+                        <th class="text-left  py-1.5 font-medium">When</th>
+                        <th class="text-left  py-1.5 font-medium">Side</th>
+                        <th class="text-right py-1.5 font-medium">Qty</th>
+                        <th class="text-right py-1.5 font-medium">Price</th>
+                        <th class="text-left  py-1.5 font-medium">Tier</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-stone-100">
+                {% for f in fills %}
+                    <tr>
+                        <td class="py-1.5">{{ f.ts[:16] }}</td>
+                        <td class="py-1.5">
+                            {% if f.is_entry == 1 %}
+                            <span class="text-emerald-700">{{ f.side }}</span>
+                            {% else %}
+                            <span class="text-red-700">{{ f.side }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="py-1.5 text-right">{{ f.contracts }}</td>
+                        <td class="py-1.5 text-right">${{ "%.2f"|format(f.price) }}</td>
+                        <td class="py-1.5 text-stone-500 text-[11px]">
+                            {% if f.tp_tier %}TP{{ f.tp_tier }}{% else %}—{% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-[12px] text-stone-400">No fills recorded for this intent.</p>
+            {% endif %}
+        </div>
+
+        <!-- MFE / MAE -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">MFE / MAE</div>
+            {% if trade and (trade.mfe_in_pct is not none or trade.mfe_exp_pct is not none) %}
+                <table class="w-full text-[12px]">
+                    <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+                        <tr>
+                            <th class="text-left  py-1.5 font-medium">Window</th>
+                            <th class="text-right py-1.5 font-medium">Max favorable</th>
+                            <th class="text-right py-1.5 font-medium">Max adverse</th>
+                            <th class="text-right py-1.5 font-medium">You captured</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-stone-100">
+                        <tr>
+                            <td class="py-1.5">In-trade <span class="text-stone-400 text-[11px]">(entry → exit)</span></td>
+                            <td class="py-1.5 text-right mono {% if trade.mfe_in_pct and trade.mfe_in_pct > 0 %}text-emerald-600{% endif %}">
+                                {% if trade.mfe_in_pct is not none %}{{ "%+.1f"|format(trade.mfe_in_pct) }}%{% else %}—{% endif %}
+                            </td>
+                            <td class="py-1.5 text-right mono {% if trade.mae_in_pct and trade.mae_in_pct < 0 %}text-red-600{% endif %}">
+                                {% if trade.mae_in_pct is not none %}{{ "%+.1f"|format(trade.mae_in_pct) }}%{% else %}—{% endif %}
+                            </td>
+                            <td class="py-1.5 text-right mono text-stone-700">
+                                {% if trade.capture_pct is not none %}{{ trade.capture_pct }}%{% else %}—{% endif %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="py-1.5">To-expiry <span class="text-stone-400 text-[11px]">(counterfactual)</span></td>
+                            <td class="py-1.5 text-right mono {% if trade.mfe_exp_pct and trade.mfe_exp_pct > 0 %}text-emerald-600{% endif %}">
+                                {% if trade.mfe_exp_pct is not none %}{{ "%+.1f"|format(trade.mfe_exp_pct) }}%{% else %}—{% endif %}
+                            </td>
+                            <td class="py-1.5 text-right mono {% if trade.mae_exp_pct and trade.mae_exp_pct < 0 %}text-red-600{% endif %}">
+                                {% if trade.mae_exp_pct is not none %}{{ "%+.1f"|format(trade.mae_exp_pct) }}%{% else %}—{% endif %}
+                            </td>
+                            <td class="py-1.5 text-right mono text-stone-700">
+                                {% if trade.capture_exp_pct is not none %}{{ trade.capture_exp_pct }}%{% else %}—{% endif %}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p class="text-[11px] text-stone-400 mt-2">
+                    Actual ROI: <span class="mono">{{ trade.actual_pct }}%</span>.
+                    "Captured" = actual / MFE, capped at 100%.
+                </p>
+            {% else %}
+                <p class="text-[12px] text-stone-500">
+                    No MFE/MAE data yet. Run the Polygon backfill on
+                    <a href="/settings/keys" class="text-emerald-700 hover:underline">Settings → API keys</a>
+                    to populate these columns.
+                </p>
+            {% endif %}
+        </div>
+
+        <!-- TP fills detail -->
+        {% if trade and trade.tp_fills %}
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">TP execution</div>
+            <table class="w-full text-[12px] mono">
+                <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+                    <tr>
+                        <th class="text-left  py-1.5 font-medium">Tier</th>
+                        <th class="text-right py-1.5 font-medium">Qty</th>
+                        <th class="text-right py-1.5 font-medium">Price</th>
+                        <th class="text-right py-1.5 font-medium">% from entry</th>
+                        <th class="text-right py-1.5 font-medium">Mins held</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-stone-100">
+                {% for tp in trade.tp_fills %}
+                    <tr>
+                        <td class="py-1.5">TP{{ tp.tier }}</td>
+                        <td class="py-1.5 text-right">{{ tp.qty }}</td>
+                        <td class="py-1.5 text-right">${{ "%.2f"|format(tp.price) }}</td>
+                        <td class="py-1.5 text-right {% if tp.pct and tp.pct > 0 %}text-emerald-600{% elif tp.pct and tp.pct < 0 %}text-red-600{% endif %}">
+                            {% if tp.pct is not none %}{{ "%+.1f"|format(tp.pct) }}%{% else %}—{% endif %}
+                        </td>
+                        <td class="py-1.5 text-right">
+                            {% if tp.mins is not none %}{{ tp.mins }}{% else %}—{% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- RIGHT — context (pregame + journal) -->
+    <div class="space-y-6">
+
+        <!-- Intent metadata -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Intent</div>
+            <dl class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px]">
+                <dt class="text-stone-500">Regime</dt>
+                <dd class="mono">{{ raw_intent.regime_tag or "—" }}</dd>
+
+                <dt class="text-stone-500">Chain role</dt>
+                <dd class="mono">{{ raw_intent.chain_role or "—" }}</dd>
+
+                <dt class="text-stone-500">Sector</dt>
+                <dd class="mono">{{ raw_intent.sector or "—" }}</dd>
+
+                <dt class="text-stone-500">Order type</dt>
+                <dd class="mono">{{ raw_intent.order_type or "—" }}</dd>
+
+                <dt class="text-stone-500">Limit price</dt>
+                <dd class="mono">
+                    {% if raw_intent.limit_price %}${{ "%.2f"|format(raw_intent.limit_price) }}{% else %}—{% endif %}
+                </dd>
+
+                <dt class="text-stone-500">Stop discipline</dt>
+                <dd class="mono">{{ raw_intent.stop_discipline or "—" }}</dd>
+
+                <dt class="text-stone-500">TP split</dt>
+                <dd class="mono">{{ raw_intent.tp_split_choice or "—" }}</dd>
+
+                <dt class="text-stone-500">Created</dt>
+                <dd class="mono">{{ raw_intent.created_at[:16] if raw_intent.created_at else "—" }}</dd>
+            </dl>
+            {% if raw_intent.notes %}
+            <div class="mt-3 pt-3 border-t border-stone-100 text-[12px]">
+                <div class="text-stone-500 mb-1">Notes</div>
+                <div class="text-stone-700 leading-relaxed">{{ raw_intent.notes }}</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Pregame mention -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Pregame mention</div>
+            {% if pregame_mention %}
+            <a href="/pregame/{{ pregame_mention.date }}" class="block text-[12px] text-stone-700 hover:bg-stone-50 -m-2 p-2 rounded">
+                <div class="flex items-baseline gap-2 mb-1.5">
+                    <span class="text-[11px] mono px-1.5 py-0.5 rounded
+                        {% if pregame_mention.verdict == 'LIKE' %}bg-emerald-50 text-emerald-700 border border-emerald-200
+                        {% elif pregame_mention.verdict == 'PASS' %}bg-stone-100 text-stone-600 border border-stone-200
+                        {% else %}bg-amber-50 text-amber-700 border border-amber-200{% endif %}">
+                        {{ pregame_mention.verdict }}
+                    </span>
+                    <span class="text-[11px] mono text-stone-500">{{ pregame_mention.date }}</span>
+                </div>
+                <p class="text-[12px] text-stone-700 leading-relaxed">{{ pregame_mention.reasoning }}</p>
+                {% if pregame_mention.suggested_size %}
+                <p class="text-[11px] text-stone-500 mt-1.5">
+                    Suggested size: <span class="mono">{{ pregame_mention.suggested_size }}</span>
+                </p>
+                {% endif %}
+            </a>
+            {% else %}
+            <p class="text-[12px] text-stone-400">
+                No pregame analysis cached for {{ raw_intent.created_at[:10] if raw_intent.created_at else "this date" }},
+                or {{ t.ticker }} wasn't in the picks.
+            </p>
+            {% endif %}
+        </div>
+
+        <!-- Journal mention -->
+        <div class="bg-white border border-stone-200 rounded-lg p-5">
+            <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Journal entry</div>
+            {% if journal_mention %}
+            <a href="/journal/{{ journal_mention.date }}" class="block text-[12px] text-stone-700 hover:bg-stone-50 -m-2 p-2 rounded space-y-2">
+                <div class="text-[11px] mono text-stone-500">{{ journal_mention.date }}</div>
+                {% if journal_mention.lessons %}
+                <div>
+                    <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium">Lessons</div>
+                    <div class="text-stone-700">{{ journal_mention.lessons }}</div>
+                </div>
+                {% endif %}
+                {% if journal_mention.mfe_gaps %}
+                <div>
+                    <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium">MFE gaps</div>
+                    <div class="text-stone-700">{{ journal_mention.mfe_gaps }}</div>
+                </div>
+                {% endif %}
+            </a>
+            {% else %}
+            <p class="text-[12px] text-stone-400">
+                No journal entry for {{ raw_intent.created_at[:10] if raw_intent.created_at else "this date" }}.
+                <a href="/journal/{{ raw_intent.created_at[:10] if raw_intent.created_at else '' }}" class="text-emerald-700 hover:underline">Write one →</a>
+            </p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Chart.js + time-scale adapter + annotation plugin (this page only) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+
+<script>
+function tradeChart(intentId) {
+    return {
+        status:    'loading',  // loading | ok | missing | error
+        occ:       '',
+        bars:      [],
+        markers:   [],
+        iMin:      null,
+        iMax:      null,
+        axisTicks: [],
+        entryPrice: null,
+        mfePrice:   null,
+        stats:      {},
+        errorMsg:  '',
+        _chart:    null,
+        _barTimes: [],   // i → real epoch_ms lookup for tick + tooltip labels
+
+        async load() {
+            try {
+                const res = await fetch(`/trades/${intentId}/chart.json`);
+                const body = await res.json();
+                if (!res.ok) {
+                    if (res.status === 404 && body.hint) {
+                        this.occ = body.occ || '';
+                        this.status = 'missing';
+                    } else {
+                        this.errorMsg = body.error || `HTTP ${res.status}`;
+                        this.status = 'error';
+                    }
+                    return;
+                }
+                this.occ        = body.occ;
+                this.bars       = body.bars || [];
+                this.markers    = body.markers || [];
+                this.iMin       = body.i_min ?? 0;
+                this.iMax       = body.i_max ?? (this.bars.length - 1);
+                this.axisTicks  = body.axis_ticks || [];
+                this.entryPrice = body.entry_price ?? null;
+                this.mfePrice   = body.mfe_marker?.y ?? null;
+                this.stats      = body.stats || {};
+                this._barTimes  = this.bars.map(b => b.t);
+
+                // MFE peak marker (single dot at the bar that printed the
+                // max favorable price during the trade window).
+                if (body.mfe_marker) {
+                    this.markers.push(body.mfe_marker);
+                }
+
+                this.status = 'ok';
+                // Wait one tick so the canvas is in the DOM (x-show toggled)
+                this.$nextTick(() => this.render());
+            } catch (e) {
+                this.errorMsg = e.message || 'fetch failed';
+                this.status = 'error';
+            }
+        },
+
+        render() {
+            const ctx = this.$refs.canvas;
+            if (!ctx || !window.Chart) return;
+            const self = this;   // captured for use inside Chart.js callbacks
+
+            const colorFor = (kind) => ({
+                entry:  'rgb(5, 150, 105)',     // emerald-600
+                tp1:    'rgb(14, 165, 233)',    // sky-500
+                tp2:    'rgb(99, 102, 241)',    // indigo-500
+                tp3:    'rgb(124, 58, 237)',    // violet-600
+                stop:   'rgb(239, 68, 68)',     // red-500    — below entry / prior TP
+                close:  'rgb(245, 158, 11)',    // amber-500  — discretionary profitable exit
+                mfe:    'rgb(217, 70, 239)',    // fuchsia-500 — max favorable peak
+                expiry: 'rgb(168, 162, 158)',   // stone-400
+            }[kind] || 'rgb(120, 113, 108)');
+
+            // Plot against the bar index (compressed RTH axis), not real time.
+            const lineData = this.bars.map(b => ({ x: b.i, y: b.c }));
+
+            const kinds = ['entry', 'tp1', 'tp2', 'tp3', 'stop', 'close', 'mfe'];
+            const scatterDatasets = kinds.map(k => {
+                const points = this.markers
+                    .filter(m => m.kind === k)
+                    .map(m => ({ x: m.i, y: m.y, t: m.t, label: m.label,
+                                 side: m.side, contracts: m.contracts }));
+                let radius = 6, pointStyle = 'circle';
+                if (k === 'mfe') { radius = 7; pointStyle = 'triangle'; }
+                return {
+                    type: 'scatter',
+                    label: k.toUpperCase(),
+                    data: points,
+                    backgroundColor: colorFor(k),
+                    borderColor: colorFor(k),
+                    pointRadius: radius,
+                    pointHoverRadius: radius + 2,
+                    pointStyle,
+                    showLine: false,
+                };
+            });
+
+            // Annotations: horizontal reference lines only. The chart now
+            // shows only the in-trade window so there's no in-trade /
+            // post-trade boundary to shade — the whole chart IS in-trade.
+            const annotations = {};
+
+            // (a) Entry-price reference line — dashed emerald
+            if (this.entryPrice != null) {
+                annotations.entryLine = {
+                    type: 'line',
+                    yMin: this.entryPrice,
+                    yMax: this.entryPrice,
+                    borderColor: 'rgba(5, 150, 105, 0.7)',       // emerald-600
+                    borderWidth: 1,
+                    borderDash: [4, 4],
+                    label: {
+                        display: true,
+                        content: `Entry $${this.entryPrice.toFixed(2)}`,
+                        position: 'start',
+                        backgroundColor: 'rgba(5, 150, 105, 0.9)',
+                        color: '#fff',
+                        font: { size: 10, weight: 'normal' },
+                        padding: { x: 4, y: 2 },
+                        yAdjust: -10,
+                    },
+                };
+            }
+            // (d) MFE-peak reference line — dashed fuchsia
+            if (this.mfePrice != null) {
+                annotations.mfeLine = {
+                    type: 'line',
+                    yMin: this.mfePrice,
+                    yMax: this.mfePrice,
+                    borderColor: 'rgba(217, 70, 239, 0.7)',      // fuchsia-500
+                    borderWidth: 1,
+                    borderDash: [4, 4],
+                    label: {
+                        display: true,
+                        content: `MFE $${this.mfePrice.toFixed(2)}`,
+                        position: 'end',
+                        backgroundColor: 'rgba(217, 70, 239, 0.9)',
+                        color: '#fff',
+                        font: { size: 10, weight: 'normal' },
+                        padding: { x: 4, y: 2 },
+                        yAdjust: -10,
+                    },
+                };
+            }
+
+            if (this._chart) this._chart.destroy();
+            this._chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            type: 'line',
+                            label: 'Option close',
+                            data: lineData,
+                            borderColor: 'rgb(68, 64, 60)',  // stone-700
+                            backgroundColor: 'rgba(68, 64, 60, 0.06)',
+                            borderWidth: 1.5,
+                            fill: false,           // shading comes from annotations now
+                            pointRadius: 0,
+                            tension: 0.15,
+                        },
+                        ...scatterDatasets,
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'nearest', intersect: false },
+                    plugins: {
+                        annotation: { annotations },
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                // Tooltip title shows the REAL timestamp,
+                                // looked up by bar-index from the lookup
+                                // built when the payload arrived.
+                                title: (items) => {
+                                    if (!items.length) return '';
+                                    const raw = items[0].raw || {};
+                                    const realT = raw.t ?? self._barTimes[Math.round(items[0].parsed.x)];
+                                    if (realT == null) return '';
+                                    return new Date(realT).toLocaleString(undefined,
+                                        { month: 'short', day: 'numeric', hour: 'numeric',
+                                          minute: '2-digit' });
+                                },
+                                label: (item) => {
+                                    const ds = item.dataset.label || '';
+                                    const y  = item.parsed.y;
+                                    const p  = item.raw || {};
+                                    if (p.label) {
+                                        const qty = p.contracts ? ` · ${p.contracts}x` : '';
+                                        return `${p.label}${qty} @ $${y.toFixed(2)}`;
+                                    }
+                                    return `${ds}: $${y.toFixed(2)}`;
+                                },
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            // Linear axis indexed by trading-minute position.
+                            // Closed hours collapse because the bars list is
+                            // RTH-only (Polygon doesn't emit after-hours).
+                            type: 'linear',
+                            min: this.iMin,
+                            max: this.iMax,
+                            // Server tells us which indices to label
+                            // (one per trading day start). Hide ticks that
+                            // didn't come from that list so we don't get
+                            // arbitrary integer ticks.
+                            afterBuildTicks: (axis) => {
+                                axis.ticks = self.axisTicks.map(t => ({ value: t.i }));
+                            },
+                            grid: { color: 'rgba(0,0,0,0.04)' },
+                            ticks: {
+                                font: { size: 10 },
+                                color: 'rgb(120, 113, 108)',
+                                callback: (val) => {
+                                    const t = self.axisTicks.find(t => t.i === val);
+                                    return t ? t.label : '';
+                                },
+                                autoSkip: false,
+                                maxRotation: 0,
+                            },
+                        },
+                        y: {
+                            grid: { color: 'rgba(0,0,0,0.04)' },
+                            ticks: {
+                                font: { size: 10 },
+                                color: 'rgb(120, 113, 108)',
+                                callback: (v) => '$' + v.toFixed(2),
+                            },
+                        },
+                    },
+                },
+            });
+        },
+    };
+}
+</script>
+
+{% endblock %}

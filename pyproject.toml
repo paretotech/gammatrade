@@ -1,6 +1,6 @@
 [project]
 name = "gammatrade"
-version = "0.1.0"
+version = "0.3.1"
 description = "Self-hosted options-trading dashboard with broker-CSV import, MFE/MAE analytics, and Claude Code integration."
 authors = [{name = "paretotech"}]
 license = {text = "MIT"}

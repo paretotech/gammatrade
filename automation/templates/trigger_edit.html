@@ -23,20 +23,31 @@
 
     <form method="post" action="/triggers/{{ trigger.trigger_id }}/edit" class="space-y-5">
 
-        <!-- Contract -->
-        <div>
+        <!-- Contract + decision card -->
+        <div x-data='decisionCard({
+                ticker: "{{ trigger.ticker }}",
+                strike: "{{ trigger.strike }}",
+                right:  "{{ trigger.right }}"
+             })' x-init="refresh()">
             <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Contract</div>
             <div class="grid grid-cols-12 gap-2">
                 <div class="col-span-3 mono px-3 py-2 bg-stone-100 border border-stone-200 rounded-md text-sm text-stone-600">{{ trigger.ticker }}</div>
                 <input type="date" name="expiry" required value="{{ trigger.expiry }}"
                        class="col-span-3 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
-                <input type="number" step="0.50" name="strike" required value="{{ trigger.strike|int if trigger.strike == trigger.strike|int else trigger.strike }}"
+                <input type="number" step="0.50" name="strike" required
+                       x-model="strike"
+                       @input.debounce.300ms="refresh()"
+                       value="{{ trigger.strike|int if trigger.strike == trigger.strike|int else trigger.strike }}"
                        class="col-span-3 mono px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
-                <select name="right" class="col-span-3 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
-                    <option value="C" {% if trigger.right == 'C' %}selected{% endif %}>Call</option>
-                    <option value="P" {% if trigger.right == 'P' %}selected{% endif %}>Put</option>
+                <select name="right" x-model="right" @change="refresh()"
+                        class="col-span-3 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                    <option value="C">Call</option>
+                    <option value="P">Put</option>
                 </select>
             </div>
+
+            {# Same decision card as on /entries/new — sees ticker/strike/right live #}
+            {% include "_decision_card.html" %}
         </div>
 
         <!-- Order -->

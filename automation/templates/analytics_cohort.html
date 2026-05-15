@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+{# Cohort benchmark — user vs the reference_trades cohort. The cohort
+   represents an external trader's published / curated trades, so the
+   benchmark answers "how does my book compare against an idealized
+   version of this strategy?" Note that reference trades may carry
+   selection bias (e.g. winning alerts only) — interpret WR deltas
+   accordingly. The capture % column tends to be the most honest
+   apples-to-apples comparison since it normalizes against MFE. #}
+
+<div class="mb-6 flex items-baseline justify-between flex-wrap gap-3">
+    <div>
+        <h2 class="text-[15px] font-semibold text-stone-700">Cohort benchmark</h2>
+        <p class="text-[12px] text-stone-500 mt-0.5">
+            Your {{ data.n_user }} trades vs the {{ data.n_cohort }}-trade reference cohort.
+            The reference cohort is loaded from <span class="mono">reference_trades</span>
+            and may be selection-biased toward winners — read win-rate
+            deltas as "shape" rather than literal edge.
+        </p>
+    </div>
+</div>
+
+{# Helper macro — renders a comparison cell with optional Δ tinting #}
+{% macro cmp_cell(u, c, delta, unit='%') %}
+    <td class="py-2 mono text-right">
+        <span class="text-stone-700">{% if u is not none %}{{ u }}{{ unit }}{% else %}—{% endif %}</span>
+        <span class="text-stone-300 mx-1">/</span>
+        <span class="text-stone-500">{% if c is not none %}{{ c }}{{ unit }}{% else %}—{% endif %}</span>
+        {% if delta is not none %}
+        <div class="text-[10px] mono mt-0.5
+            {% if delta > 0 %}text-emerald-700
+            {% elif delta < 0 %}text-red-700
+            {% else %}text-stone-400{% endif %}">
+            Δ {{ "%+.1f"|format(delta) }}pt
+        </div>
+        {% endif %}
+    </td>
+{% endmacro %}
+
+{# Overall comparison — large card #}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">Overall</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            Format per cell: <span class="mono text-stone-700">YOU</span>
+            <span class="text-stone-300">/</span>
+            <span class="mono text-stone-500">cohort</span>
+            with a Δ pill below.
+        </p>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left px-5 py-2 font-medium">Metric</th>
+                <th class="text-right py-2 font-medium">Win rate</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-right py-2 font-medium">Median MFE in-trade</th>
+                <th class="text-right py-2 font-medium">Median MAE in-trade</th>
+                <th class="text-right pr-5 py-2 font-medium">Median capture</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            <tr>
+                <td class="px-5 py-2 font-medium">All trades</td>
+                {{ cmp_cell(data.overall.user.win_rate,       data.overall.cohort.win_rate,       data.overall.delta.win_rate) }}
+                {{ cmp_cell(data.overall.user.median_roi,     data.overall.cohort.median_roi,     data.overall.delta.median_roi) }}
+                {{ cmp_cell(data.overall.user.median_mfe,     data.overall.cohort.median_mfe,     data.overall.delta.median_mfe) }}
+                {{ cmp_cell(data.overall.user.median_mae,     data.overall.cohort.median_mae,     data.overall.delta.median_mae) }}
+                <td class="py-2 mono text-right pr-5">
+                    <span class="text-stone-700">{% if data.overall.user.median_capture is not none %}{{ data.overall.user.median_capture }}%{% else %}—{% endif %}</span>
+                    <span class="text-stone-300 mx-1">/</span>
+                    <span class="text-stone-500">{% if data.overall.cohort.median_capture is not none %}{{ data.overall.cohort.median_capture }}%{% else %}—{% endif %}</span>
+                    {% if data.overall.delta.median_capture is not none %}
+                    <div class="text-[10px] mono mt-0.5
+                        {% if data.overall.delta.median_capture > 0 %}text-emerald-700
+                        {% elif data.overall.delta.median_capture < 0 %}text-red-700{% endif %}">
+                        Δ {{ "%+.1f"|format(data.overall.delta.median_capture) }}pt
+                    </div>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+{# Narrative — surface the most actionable takeaway #}
+{% set cap_delta = data.overall.delta.median_capture %}
+{% set wr_delta  = data.overall.delta.win_rate %}
+{% set mfe_delta = data.overall.delta.median_mfe %}
+<div class="mb-6 px-3 py-2 rounded text-[12px] bg-stone-50 text-stone-700 border border-stone-200">
+    <span class="font-medium">Read:</span>
+    {% if cap_delta and cap_delta > 0 %}
+        Your capture % is
+        <span class="text-emerald-700 font-medium">{{ "+%.1f"|format(cap_delta) }}pt</span>
+        above cohort — you exit better than the reference book. But your median MFE
+        is <span class="text-red-700">{{ "%.1f"|format(mfe_delta) }}pt</span> below
+        cohort — cohort takes setups with more upside. The win-rate gap of
+        <span class="text-red-700">{{ "%.1f"|format(wr_delta) }}pt</span> likely
+        reflects reference-cohort selection bias toward winning alerts;
+        treat the WR delta as directional, not edge.
+    {% else %}
+        Your capture % is
+        <span class="text-red-700 font-medium">{{ "%.1f"|format(cap_delta) }}pt</span>
+        below cohort — they take more out of the moves they see. Your
+        execution-quality gap is real, not a sample-bias artifact.
+    {% endif %}
+</div>
+
+{# By DTE bucket #}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">By DTE bucket</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            How your numbers compare per DTE class. Empty rows mean neither
+            side has trades in that bucket.
+        </p>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left px-5 py-2 font-medium">DTE</th>
+                <th class="text-right py-2 font-medium">N (you / cohort)</th>
+                <th class="text-right py-2 font-medium">Win rate</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-right py-2 font-medium">Median MFE</th>
+                <th class="text-right pr-5 py-2 font-medium">Median capture</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in data.by_dte %}
+            {% if r.user.n or r.cohort.n %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2 font-medium">{{ r.bucket }}</td>
+                <td class="py-2 mono text-right text-stone-500">{{ r.user.n }} / {{ r.cohort.n }}</td>
+                {{ cmp_cell(r.user.win_rate,       r.cohort.win_rate,       r.delta.win_rate) }}
+                {{ cmp_cell(r.user.median_roi,     r.cohort.median_roi,     r.delta.median_roi) }}
+                {{ cmp_cell(r.user.median_mfe,     r.cohort.median_mfe,     r.delta.median_mfe) }}
+                <td class="py-2 mono text-right pr-5">
+                    <span class="text-stone-700">{% if r.user.median_capture is not none %}{{ r.user.median_capture }}%{% else %}—{% endif %}</span>
+                    <span class="text-stone-300 mx-1">/</span>
+                    <span class="text-stone-500">{% if r.cohort.median_capture is not none %}{{ r.cohort.median_capture }}%{% else %}—{% endif %}</span>
+                    {% if r.delta.median_capture is not none %}
+                    <div class="text-[10px] mono mt-0.5
+                        {% if r.delta.median_capture > 0 %}text-emerald-700
+                        {% elif r.delta.median_capture < 0 %}text-red-700{% endif %}">
+                        Δ {{ "%+.1f"|format(r.delta.median_capture) }}pt
+                    </div>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{# By side #}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">By side</h3>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left px-5 py-2 font-medium">Side</th>
+                <th class="text-right py-2 font-medium">N (you / cohort)</th>
+                <th class="text-right py-2 font-medium">Win rate</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-right py-2 font-medium">Median MFE</th>
+                <th class="text-right pr-5 py-2 font-medium">Median capture</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in data.by_side %}
+            {% if r.user.n or r.cohort.n %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2 font-medium">{{ r.label }}</td>
+                <td class="py-2 mono text-right text-stone-500">{{ r.user.n }} / {{ r.cohort.n }}</td>
+                {{ cmp_cell(r.user.win_rate,       r.cohort.win_rate,       r.delta.win_rate) }}
+                {{ cmp_cell(r.user.median_roi,     r.cohort.median_roi,     r.delta.median_roi) }}
+                {{ cmp_cell(r.user.median_mfe,     r.cohort.median_mfe,     r.delta.median_mfe) }}
+                <td class="py-2 mono text-right pr-5">
+                    <span class="text-stone-700">{% if r.user.median_capture is not none %}{{ r.user.median_capture }}%{% else %}—{% endif %}</span>
+                    <span class="text-stone-300 mx-1">/</span>
+                    <span class="text-stone-500">{% if r.cohort.median_capture is not none %}{{ r.cohort.median_capture }}%{% else %}—{% endif %}</span>
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{# By sector — top 6 sectors by combined headcount #}
+{% if data.by_sector %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">By sector (top 6)</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            Sectors ranked by total trade count across both books.
+        </p>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left px-5 py-2 font-medium">Sector</th>
+                <th class="text-right py-2 font-medium">N (you / cohort)</th>
+                <th class="text-right py-2 font-medium">Win rate</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-right py-2 font-medium">Median MFE</th>
+                <th class="text-right pr-5 py-2 font-medium">Median capture</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in data.by_sector %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2 mono font-medium">{{ r.sector }}</td>
+                <td class="py-2 mono text-right text-stone-500">{{ r.user.n }} / {{ r.cohort.n }}</td>
+                {{ cmp_cell(r.user.win_rate,       r.cohort.win_rate,       r.delta.win_rate) }}
+                {{ cmp_cell(r.user.median_roi,     r.cohort.median_roi,     r.delta.median_roi) }}
+                {{ cmp_cell(r.user.median_mfe,     r.cohort.median_mfe,     r.delta.median_mfe) }}
+                <td class="py-2 mono text-right pr-5">
+                    <span class="text-stone-700">{% if r.user.median_capture is not none %}{{ r.user.median_capture }}%{% else %}—{% endif %}</span>
+                    <span class="text-stone-300 mx-1">/</span>
+                    <span class="text-stone-500">{% if r.cohort.median_capture is not none %}{{ r.cohort.median_capture }}%{% else %}—{% endif %}</span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% endblock %}

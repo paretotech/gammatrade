@@ -22,20 +22,37 @@
 <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
     <div>{% include "_date_range_chips.html" %}</div>
 
-    <form method="post" action="/analytics/trades/import" enctype="multipart/form-data"
-          x-data="{ filename: '' }" class="flex items-center gap-2"
-          title="Accepts TD orderStatus CSV or IBKR TRANSACTIONS CSV — auto-detects format">
-        <label class="inline-flex items-center gap-2 cursor-pointer text-[11px] text-stone-600 hover:text-stone-900">
-            <input type="file" name="td_csv" accept=".csv" required class="hidden"
-                   @change="filename = $event.target.files[0]?.name || ''; if(filename) $event.target.form.submit();">
-            <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-stone-900 hover:bg-stone-700 text-white text-[12px] font-medium transition-colors">
-                + Import broker CSV
-            </span>
-        </label>
-        <template x-if="filename">
-            <span class="text-[11px] text-stone-500 mono" x-text="filename"></span>
-        </template>
-    </form>
+    <div class="flex items-center gap-2 flex-wrap">
+        <form method="post" action="/analytics/trades/import" enctype="multipart/form-data"
+              x-data="{ filename: '' }" class="flex items-center gap-2"
+              title="TD Ameritrade orderStatus CSV">
+            <label class="inline-flex items-center gap-2 cursor-pointer text-[11px] text-stone-600 hover:text-stone-900">
+                <input type="file" name="td_csv" accept=".csv" required class="hidden"
+                       @change="filename = $event.target.files[0]?.name || ''; if(filename) $event.target.form.submit();">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-stone-900 hover:bg-stone-700 text-white text-[12px] font-medium transition-colors">
+                    + Import TD CSV
+                </span>
+            </label>
+            <template x-if="filename">
+                <span class="text-[11px] text-stone-500 mono" x-text="filename"></span>
+            </template>
+        </form>
+
+        <form method="post" action="/analytics/trades/import-ibkr" enctype="multipart/form-data"
+              x-data="{ filename: '' }" class="flex items-center gap-2"
+              title="IBKR Flex Transaction History CSV">
+            <label class="inline-flex items-center gap-2 cursor-pointer text-[11px] text-stone-600 hover:text-stone-900">
+                <input type="file" name="ibkr_csv" accept=".csv" required class="hidden"
+                       @change="filename = $event.target.files[0]?.name || ''; if(filename) $event.target.form.submit();">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white border border-stone-300 hover:bg-stone-50 text-stone-800 text-[12px] font-medium transition-colors">
+                    + Import IBKR CSV
+                </span>
+            </label>
+            <template x-if="filename">
+                <span class="text-[11px] text-stone-500 mono" x-text="filename"></span>
+            </template>
+        </form>
+    </div>
 </div>
 
 {# Reset the mb-4 from the chips partial since we just wrapped it #}
@@ -70,25 +87,36 @@
     "actual_pct": t.actual_pct,
     "capture_pct": t.capture_pct,
     "capture_exp_pct": t.capture_exp_pct,
+    "tags": t.tags or [],
+    "dte": t.dte if t.dte is defined else None,
 }) %}
 {% endfor %}
+
+{# Distinct filter values for the dropdowns. #}
+{% set unique_tickers = (table_rows | map(attribute='ticker') | unique | list) | sort %}
+{% set unique_regimes = (table_rows | map(attribute='regime') | reject('none') | unique | list) | sort %}
 
 <div class="bg-white border border-stone-200 rounded-lg overflow-hidden"
      x-data='{
         rows: {{ table_rows | tojson }},
+        catalog: {{ tag_catalog | tojson }},
+        tickerOptions: {{ unique_tickers | tojson }},
+        regimeOptions: {{ unique_regimes | tojson }},
         sortKey: "entry_date",
         sortDir: -1,
         expanded: {},
+        showFilter: false,
+        // Filter state — every filter AND-ed against the others.
+        activeTags: [],
+        dateFrom: "",
+        dateTo:   "",
+        tickerFilter: "",
+        regimeFilter: "",
+        dteFilter: "",                // "" / "0" / "1-2" / "3-7" / "8+"
         toggle(id) { this.expanded[id] = !this.expanded[id]; },
         isOpen(id) { return !!this.expanded[id]; },
-        fmtPct(v) {
-            if (v === null || v === undefined) return "—";
-            return (v >= 0 ? "+" : "") + v + "%";
-        },
-        fmtPctPlain(v) {
-            if (v === null || v === undefined) return "—";
-            return v + "%";
-        },
+        fmtPct(v) { return v == null ? "—" : (v >= 0 ? "+" : "") + v + "%"; },
+        fmtPctPlain(v) { return v == null ? "—" : v + "%"; },
         sort(key) {
             if (this.sortKey === key) { this.sortDir = -this.sortDir; }
             else { this.sortKey = key; this.sortDir = -1; }
@@ -98,18 +126,154 @@
                 return this.sortDir * ((av > bv) - (av < bv));
             });
         },
-        arrow(key) { return this.sortKey === key ? (this.sortDir === -1 ? "↓" : "↑") : ""; }
+        arrow(key) { return this.sortKey === key ? (this.sortDir === -1 ? "↓" : "↑") : ""; },
+        toggleTag(t) {
+            const i = this.activeTags.indexOf(t);
+            if (i >= 0) this.activeTags.splice(i, 1); else this.activeTags.push(t);
+        },
+        matchesDte(d) {
+            if (!this.dteFilter || d == null) return !this.dteFilter;
+            if (this.dteFilter === "0")   return d === 0;
+            if (this.dteFilter === "1-2") return d >= 1 && d <= 2;
+            if (this.dteFilter === "3-7") return d >= 3 && d <= 7;
+            if (this.dteFilter === "8+")  return d >= 8;
+            return true;
+        },
+        get visible() {
+            return this.rows.filter(r => {
+                if (this.activeTags.length > 0
+                    && !this.activeTags.every(t => (r.tags || []).includes(t))) return false;
+                if (this.dateFrom && r.entry_date < this.dateFrom) return false;
+                if (this.dateTo   && r.entry_date > this.dateTo)   return false;
+                if (this.tickerFilter && r.ticker !== this.tickerFilter) return false;
+                if (this.regimeFilter && r.regime !== this.regimeFilter) return false;
+                if (this.dteFilter && !this.matchesDte(r.dte)) return false;
+                return true;
+            });
+        },
+        get activeFilterCount() {
+            return this.activeTags.length
+                 + (this.dateFrom ? 1 : 0)
+                 + (this.dateTo   ? 1 : 0)
+                 + (this.tickerFilter ? 1 : 0)
+                 + (this.regimeFilter ? 1 : 0)
+                 + (this.dteFilter ? 1 : 0);
+        },
+        clearAll() {
+            this.activeTags = [];
+            this.dateFrom = ""; this.dateTo = "";
+            this.tickerFilter = ""; this.regimeFilter = ""; this.dteFilter = "";
+        },
+        familyColor(family) {
+            return {
+                level:     "bg-emerald-50 text-emerald-700 border-emerald-200",
+                structure: "bg-sky-50 text-sky-700 border-sky-200",
+                time:      "bg-stone-100 text-stone-700 border-stone-200",
+                execution: "bg-amber-50 text-amber-700 border-amber-200",
+            }[family] || "bg-stone-100 text-stone-700 border-stone-200";
+        }
      }'>
     <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
         <h2 class="text-[15px] font-semibold text-stone-700">Closed trades</h2>
-        <span class="text-[11px] text-stone-500" x-text="rows.length + ' shown · click headers to sort'"></span>
+        <div class="flex items-center gap-3">
+            <span class="text-[11px] text-stone-500" x-text="visible.length + ' shown · click headers to sort'"></span>
+            {# Filter toggle — opens the chip strip below. Highlights when any
+               filter is active so the user can spot why the row count differs
+               from total. #}
+            <button type="button" @click="showFilter = !showFilter"
+                    :class="(showFilter || activeFilterCount > 0)
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                        : 'text-stone-500 hover:text-stone-900 border-stone-200 hover:border-stone-300'"
+                    class="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded border transition-colors"
+                    title="Filter trades">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor"
+                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 5h14M6 10h8M9 15h2"/>
+                </svg>
+                <span>Filter</span>
+                <span x-show="activeFilterCount > 0"
+                      class="ml-0.5 px-1.5 rounded-full bg-emerald-600 text-white text-[9px] font-semibold mono"
+                      x-text="activeFilterCount"></span>
+            </button>
+        </div>
     </div>
 
-    <template x-if="rows.length === 0">
-        <p class="text-sm text-stone-500 text-center py-12">No closed trades in selected range.</p>
+    {# Filter panel — hidden until the user clicks the filter icon.
+       All filters AND together. #}
+    <div x-show="showFilter" x-cloak class="border-b border-stone-200 bg-stone-50/40">
+
+        {# Top row: date range + ticker + regime + DTE bucket #}
+        <div class="px-5 py-3 flex flex-wrap items-end gap-x-4 gap-y-2 text-[11px]">
+            <div>
+                <label class="text-stone-500 uppercase tracking-wider text-[10px] font-medium block mb-0.5">Date from</label>
+                <input type="date" x-model="dateFrom"
+                       class="mono text-[11px] px-2 py-1 border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+            </div>
+            <div>
+                <label class="text-stone-500 uppercase tracking-wider text-[10px] font-medium block mb-0.5">Date to</label>
+                <input type="date" x-model="dateTo"
+                       class="mono text-[11px] px-2 py-1 border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+            </div>
+            <div>
+                <label class="text-stone-500 uppercase tracking-wider text-[10px] font-medium block mb-0.5">Ticker</label>
+                <select x-model="tickerFilter"
+                        class="mono text-[11px] px-2 py-1 border border-stone-300 rounded focus:outline-none focus:border-emerald-500 min-w-[90px]">
+                    <option value="">All</option>
+                    <template x-for="t in tickerOptions" :key="t">
+                        <option :value="t" x-text="t"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="text-stone-500 uppercase tracking-wider text-[10px] font-medium block mb-0.5">Regime</label>
+                <select x-model="regimeFilter"
+                        class="text-[11px] px-2 py-1 border border-stone-300 rounded focus:outline-none focus:border-emerald-500 min-w-[120px]">
+                    <option value="">All</option>
+                    <template x-for="r in regimeOptions" :key="r">
+                        <option :value="r" x-text="r"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="text-stone-500 uppercase tracking-wider text-[10px] font-medium block mb-0.5">DTE</label>
+                <select x-model="dteFilter"
+                        class="mono text-[11px] px-2 py-1 border border-stone-300 rounded focus:outline-none focus:border-emerald-500">
+                    <option value="">All</option>
+                    <option value="0">0DTE</option>
+                    <option value="1-2">1–2</option>
+                    <option value="3-7">3–7</option>
+                    <option value="8+">8+</option>
+                </select>
+            </div>
+            <button x-show="activeFilterCount > 0" type="button" @click="clearAll()"
+                    class="ml-auto text-stone-500 hover:text-stone-900 underline mb-1">clear all</button>
+        </div>
+
+        {# Tag chip strip — separate row so the dropdowns stay tidy #}
+        <div class="px-5 py-2 border-t border-stone-200 flex flex-wrap items-center gap-1 text-[11px]">
+            <span class="text-stone-500 uppercase tracking-wider text-[10px] font-medium mr-1">Tags</span>
+            <template x-for="t in catalog" :key="t.key">
+                <button type="button" @click="toggleTag(t.key)"
+                        x-show="t.n_trades > 0"
+                        :class="activeTags.includes(t.key)
+                            ? (familyColor(t.family) + ' ring-1 ring-offset-1 ring-stone-400 font-medium')
+                            : (familyColor(t.family) + ' opacity-60 hover:opacity-100')"
+                        class="px-1.5 py-0.5 rounded border mono">
+                    <span x-text="t.label"></span>
+                    <span class="text-[9px] opacity-70" x-text="'(' + t.n_trades + ')'"></span>
+                </button>
+            </template>
+        </div>
+    </div>
+
+    <template x-if="visible.length === 0">
+        <p class="text-sm text-stone-500 text-center py-12">
+            <span x-show="rows.length === 0">No closed trades in selected range.</span>
+            <span x-show="rows.length > 0 && activeFilterCount > 0">No trades match the selected filters.</span>
+        </p>
     </template>
 
-    <template x-if="rows.length > 0">
+    <template x-if="visible.length > 0">
         <table class="w-full text-sm">
             <thead class="bg-stone-50 text-stone-500 text-[11px] uppercase tracking-wider select-none">
                 <tr>
@@ -127,14 +291,14 @@
                     <th class="text-left px-3 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('chain_role')">Role <span x-text="arrow('chain_role')"></span></th>
                 </tr>
             </thead>
-            <template x-for="r in rows" :key="r.intent_id">
+            <template x-for="r in visible" :key="r.intent_id">
                 <tbody class="divide-y divide-stone-100 border-b border-stone-100">
                     <tr class="hover:bg-stone-50 cursor-pointer" @click="toggle(r.intent_id)">
                         <td class="px-2 text-center text-stone-400 select-none"
                             x-text="isOpen(r.intent_id) ? '▾' : '▸'"></td>
                         <td class="px-3 py-1.5 mono text-[12px] text-stone-600" x-text="r.entry_date"></td>
                         <td class="px-3 py-1.5 mono font-medium" @click.stop>
-                            <a :href="'/positions/' + r.intent_id" class="hover:text-emerald-700" x-text="r.ticker"></a>
+                            <a :href="'/trades/' + r.intent_id" class="hover:text-emerald-700" x-text="r.ticker"></a>
                         </td>
                         <td class="px-3 py-1.5 mono text-[12px] text-stone-500" x-text="r.expiry + ' ' + r.strike + r.right"></td>
                         <td class="px-3 py-1.5 text-right mono text-[12px]" x-text="r.entry_qty"></td>

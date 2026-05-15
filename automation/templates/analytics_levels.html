@@ -1,0 +1,564 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+{# Connects published support/resistance levels (Settings → Levels) to
+   actual trade outcomes. Three rollups:
+     1. Position class — where the underlying was relative to the
+        published levels at entry (ATH break, near resistance, etc.)
+     2. Per-(ticker, level) performance — which individual levels print
+     3. ATH-break detail list — every trade entered above all mapped
+        resistance, since that's the highest-edge bucket here
+#}
+
+<div class="mb-6 flex items-baseline justify-between flex-wrap gap-3">
+    <div>
+        <h2 class="text-[15px] font-semibold text-stone-700">Levels analysis</h2>
+        <p class="text-[12px] text-stone-500 mt-0.5">
+            {{ data.n_analyzed }} of {{ data.n_total }} closed trades classified against levels
+            active at entry.
+            {% if data.n_no_bars > 0 %} · {{ data.n_no_bars }} skipped (no underlying bars){% endif %}
+            {% if data.n_no_levels > 0 %} · {{ data.n_no_levels }} skipped (no levels){% endif %}
+        </p>
+    </div>
+    <div class="flex items-center gap-1 text-[12px]">
+        <span class="text-stone-500 mr-2">Proximity:</span>
+        {% for p in [0.3, 0.5, 1.0, 2.0] %}
+        <a href="?range={{ range_key }}&amp;proximity={{ p }}"
+           class="px-2 py-0.5 rounded border
+                  {% if proximity == p %}border-emerald-600 text-emerald-700 font-medium bg-emerald-50
+                  {% else %}border-stone-200 text-stone-500 hover:text-stone-900{% endif %}">
+            {{ p }}%
+        </a>
+        {% endfor %}
+    </div>
+</div>
+
+{# ─── Position class headline grid ─────────────────────────────────── #}
+{% if data.by_bucket %}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+    {% for r in data.by_bucket %}
+    <div class="bg-white border border-stone-200 rounded-lg p-4
+        {% if r.win_rate and r.win_rate >= 75 %}ring-1 ring-emerald-200{% endif %}">
+        <div class="flex items-baseline justify-between mb-1">
+            <div class="text-[10px] uppercase tracking-wider text-stone-500">{{ r.label }}</div>
+            <div class="text-[11px] mono text-stone-400">n={{ r.n }}</div>
+        </div>
+        <div class="mono font-semibold
+            {% if r.win_rate and r.win_rate >= 70 %}text-emerald-700
+            {% elif r.win_rate and r.win_rate < 50 %}text-red-700
+            {% else %}text-stone-900{% endif %}"
+             style="font-size: 22px;">
+            {{ r.win_rate if r.win_rate is not none else "—" }}%
+        </div>
+        <div class="text-[11px] mono text-stone-500 mt-0.5">
+            ROI <span class="
+                {% if r.median_roi and r.median_roi > 0 %}text-emerald-700
+                {% elif r.median_roi and r.median_roi < 0 %}text-red-700{% endif %}">
+                {{ "%+.1f"|format(r.median_roi) if r.median_roi is not none else "—" }}%
+            </span>
+            · capture {{ r.median_capture if r.median_capture is not none else "—" }}%
+        </div>
+        <div class="text-[11px] mono text-stone-400 mt-0.5">
+            total
+            <span class="{% if r.total_pnl > 0 %}text-emerald-600{% elif r.total_pnl < 0 %}text-red-600{% endif %}">
+                {% if r.total_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(r.total_pnl) }}
+            </span>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{# Narrative interpretation — surface the punchline so the user doesn't have to read the grid. #}
+{% if data.ath_break.n and data.ath_break.n > 0 %}
+<div class="mb-6 px-3 py-2 rounded text-[12px]
+    {% if data.ath_break.win_rate >= 75 %}bg-emerald-50 text-emerald-800 border border-emerald-200
+    {% elif data.ath_break.win_rate >= 50 %}bg-stone-50 text-stone-700 border border-stone-200
+    {% else %}bg-red-50 text-red-800 border border-red-200{% endif %}">
+    {% if data.ath_break.win_rate >= 75 %}
+        <span class="font-medium">ATH breaks are your highest-edge setup.</span>
+    {% else %}
+        <span class="font-medium">ATH break performance:</span>
+    {% endif %}
+    {{ data.ath_break.n }} trades, {{ data.ath_break.win_rate }}% WR, median ROI
+    <span class="mono">{{ "%+.1f"|format(data.ath_break.median_roi) if data.ath_break.median_roi is not none else "—" }}%</span>
+    · median capture
+    <span class="mono">{{ data.ath_break.median_capture }}%</span>.
+</div>
+{% endif %}
+
+{# ─── Per-level performance table ──────────────────────────────────── #}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6"
+     x-data='{
+        rows: {{ data.per_level | tojson }},
+        expanded: null,                              // (ticker + "-" + level) of the open row
+        sortKey: "n",
+        sortDir: -1,
+        sort(k) {
+            if (this.sortKey === k) { this.sortDir = -this.sortDir; }
+            else { this.sortKey = k; this.sortDir = -1; }
+            this.rows.sort((a, b) => {
+                const av = a[k] ?? -1e9, bv = b[k] ?? -1e9;
+                if (typeof av === "string") return this.sortDir * av.localeCompare(bv);
+                return this.sortDir * ((av > bv) - (av < bv));
+            });
+        },
+        arrow(k) { return this.sortKey === k ? (this.sortDir === -1 ? "↓" : "↑") : ""; },
+        key(r)   { return r.ticker + "-" + r.level; },
+        toggle(r) { this.expanded = (this.expanded === this.key(r)) ? null : this.key(r); },
+        fmtDate(ts) { return ts ? ts.slice(0, 10) : "—"; },
+        fmtMoney(v) { return (v >= 0 ? "+" : "") + "$" + v.toFixed(0); },
+        fmtPct(v)   { return v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(1) + "%"; },
+        fmtContract(t) {
+            const s = (t.strike % 1 === 0) ? t.strike : t.strike;
+            return t.ticker + " " + s + t.right;
+        }
+     }'>
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">Per-level performance</h3>
+        <span class="text-[11px] text-stone-500">
+            Each row aggregates trades whose underlying at entry was within
+            <span class="mono">{{ proximity }}%</span> of the level · ≥2 trades · click row to expand
+        </span>
+    </div>
+    {% if data.per_level %}
+    <table class="w-full text-[12px]">
+        <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200 bg-stone-50">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('ticker')">
+                    Ticker <span x-text="arrow('ticker')"></span>
+                </th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('level')">
+                    Level <span x-text="arrow('level')"></span>
+                </th>
+                <th class="text-left  py-2 px-2 font-medium">Side</th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('n')">
+                    N <span x-text="arrow('n')"></span>
+                </th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('win_rate')">
+                    WR <span x-text="arrow('win_rate')"></span>
+                </th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('median_roi')">
+                    ROI <span x-text="arrow('median_roi')"></span>
+                </th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('median_capture')">
+                    Capture <span x-text="arrow('median_capture')"></span>
+                </th>
+                <th class="text-right py-2 pr-5 font-medium cursor-pointer hover:text-stone-900" @click="sort('total_pnl')">
+                    Total P&amp;L <span x-text="arrow('total_pnl')"></span>
+                </th>
+            </tr>
+        </thead>
+        <template x-for="r in rows" :key="key(r)">
+            <tbody class="divide-y divide-stone-100">
+                {# Summary row #}
+                    <tr class="hover:bg-stone-50 cursor-pointer" @click="toggle(r)"
+                        :class="expanded === key(r) ? 'bg-stone-50' : ''">
+                        <td class="px-5 py-2 mono font-medium">
+                            <span class="inline-block w-3 text-stone-400 text-[10px]"
+                                  x-text="expanded === key(r) ? '▾' : '▸'"></span>
+                            <span x-text="r.ticker"></span>
+                        </td>
+                        <td class="py-2 mono text-right" x-text="'$' + r.level"></td>
+                        <td class="py-2 px-2 text-[11px] uppercase tracking-wider"
+                            :class="r.side === 'resistance' ? 'text-red-700' : 'text-emerald-700'"
+                            x-text="r.side"></td>
+                        <td class="py-2 mono text-right text-stone-500" x-text="r.n"></td>
+                        <td class="py-2 mono text-right font-medium"
+                            :class="r.win_rate >= 70 ? 'text-emerald-700' : (r.win_rate < 50 ? 'text-red-700' : '')"
+                            x-text="r.win_rate + '%'"></td>
+                        <td class="py-2 mono text-right"
+                            :class="r.median_roi > 0 ? 'text-emerald-700' : (r.median_roi < 0 ? 'text-red-700' : '')"
+                            x-text="(r.median_roi >= 0 ? '+' : '') + r.median_roi + '%'"></td>
+                        <td class="py-2 mono text-right text-stone-600"
+                            x-text="r.median_capture != null ? r.median_capture + '%' : '—'"></td>
+                        <td class="py-2 pr-5 mono text-right"
+                            :class="r.total_pnl > 0 ? 'text-emerald-600' : (r.total_pnl < 0 ? 'text-red-600' : '')"
+                            x-text="(r.total_pnl >= 0 ? '+' : '') + '$' + r.total_pnl.toFixed(0)"></td>
+                    </tr>
+
+                    {# Expanded detail — every trade behind the aggregate. Click a trade to open it. #}
+                    <tr x-show="expanded === key(r)" x-cloak>
+                        <td colspan="8" class="px-5 py-3 bg-stone-50/60 border-t border-stone-100">
+                            <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium mb-2">
+                                <span x-text="r.trades.length"></span> trade<span x-show="r.trades.length !== 1">s</span>
+                                within {{ proximity }}% of $<span x-text="r.level"></span> — click any row to open
+                            </div>
+                            <table class="w-full text-[11px]">
+                                <thead class="text-[10px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+                                    <tr>
+                                        <th class="text-left  py-1 font-medium">Date</th>
+                                        <th class="text-left  py-1 font-medium">Contract</th>
+                                        <th class="text-right py-1 font-medium">Underlying@entry</th>
+                                        <th class="text-right py-1 font-medium">Realized %</th>
+                                        <th class="text-right py-1 font-medium">MFE in</th>
+                                        <th class="text-right py-1 font-medium">Capture</th>
+                                        <th class="text-right py-1 font-medium">P&amp;L</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-stone-200">
+                                    <template x-for="t in r.trades" :key="t.intent_id">
+                                        <tr class="hover:bg-white cursor-pointer"
+                                            @click="window.location.href = '/trades/' + t.intent_id">
+                                            <td class="py-1 mono text-stone-500" x-text="fmtDate(t.entry_ts)"></td>
+                                            <td class="py-1 mono" x-text="fmtContract(t)"></td>
+                                            <td class="py-1 mono text-right"
+                                                x-text="t.underlying ? '$' + t.underlying.toFixed(2) : '—'"></td>
+                                            <td class="py-1 mono text-right"
+                                                :class="t.actual_pct > 0 ? 'text-emerald-700 font-medium' : (t.actual_pct < 0 ? 'text-red-700' : '')"
+                                                x-text="fmtPct(t.actual_pct)"></td>
+                                            <td class="py-1 mono text-right text-fuchsia-700"
+                                                x-text="fmtPct(t.mfe_in_pct)"></td>
+                                            <td class="py-1 mono text-right text-stone-600"
+                                                x-text="t.capture_pct != null ? t.capture_pct + '%' : '—'"></td>
+                                            <td class="py-1 mono text-right"
+                                                :class="t.realized_pnl > 0 ? 'text-emerald-600' : (t.realized_pnl < 0 ? 'text-red-600' : '')"
+                                                x-text="fmtMoney(t.realized_pnl)"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </td>
+                    </tr>
+            </tbody>
+        </template>
+    </table>
+    {% else %}
+    <p class="px-5 py-8 text-center text-[12px] text-stone-400">
+        No level with ≥2 trades within {{ proximity }}% at this proximity. Try a wider proximity.
+    </p>
+    {% endif %}
+</div>
+
+{# ─── Winning trades vs levels ─────────────────────────────────────── #}
+{% if losers_data and losers_data.n_winners > 0 %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6"
+     x-data='{ rows: {{ losers_data.winners | tojson }},
+               sortKey: "realized_pnl", sortDir: -1,
+               sort(k) {
+                   if (this.sortKey === k) { this.sortDir = -this.sortDir; }
+                   else { this.sortKey = k; this.sortDir = (k === "realized_pnl" || k === "actual_pct" || k === "capture_pct") ? -1 : 1; }
+                   this.rows.sort((a, b) => {
+                       const av = a[k] ?? -1e9, bv = b[k] ?? -1e9;
+                       if (typeof av === "string") return this.sortDir * av.localeCompare(bv);
+                       return this.sortDir * ((av > bv) - (av < bv));
+                   });
+               },
+               arrow(k) { return this.sortKey === k ? (this.sortDir === -1 ? "↓" : "↑") : ""; }
+             }'>
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">Winning trades · distance to levels</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            {{ losers_data.n_winners }} winners (+${{ "%.0f"|format(losers_data.summary.total_win) }} total)
+            · sorted by realized P&amp;L · click headers to re-sort, rows to open
+        </p>
+    </div>
+
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 bg-stone-50">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('entry_ts')">
+                    Date <span x-text="arrow('entry_ts')"></span>
+                </th>
+                <th class="text-left  py-2 font-medium">Contract</th>
+                <th class="text-right py-2 font-medium">Underlying@entry</th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('dist_above_pct')">
+                    ↑ to resistance <span x-text="arrow('dist_above_pct')"></span>
+                </th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('dist_below_pct')">
+                    ↓ to support <span x-text="arrow('dist_below_pct')"></span>
+                </th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('actual_pct')">
+                    Realized <span x-text="arrow('actual_pct')"></span>
+                </th>
+                <th class="text-right py-2 font-medium">MFE in</th>
+                <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('capture_pct')">
+                    Capture <span x-text="arrow('capture_pct')"></span>
+                </th>
+                <th class="text-right py-2 pr-5 font-medium cursor-pointer hover:text-stone-900" @click="sort('realized_pnl')">
+                    P&amp;L <span x-text="arrow('realized_pnl')"></span>
+                </th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            <template x-for="t in rows" :key="t.intent_id">
+                <tr class="hover:bg-stone-50 cursor-pointer"
+                    @click="window.location.href='/trades/' + t.intent_id">
+                    <td class="px-5 py-2 mono text-stone-500 text-[11px]"
+                        x-text="t.entry_ts ? t.entry_ts.slice(0,10) : '—'"></td>
+                    <td class="py-2 mono">
+                        <span class="font-medium" x-text="t.ticker"></span>
+                        <span class="text-stone-500"
+                              x-text="(t.strike % 1 === 0 ? t.strike.toFixed(0) : t.strike) + t.right"></span>
+                    </td>
+                    <td class="py-2 mono text-right"
+                        x-text="t.underlying ? '$' + t.underlying.toFixed(2) : '—'"></td>
+                    <td class="py-2 mono text-right">
+                        <template x-if="t.nearest_above != null">
+                            <span>
+                                <span class="text-stone-500" x-text="'$' + t.nearest_above"></span>
+                                <span class="text-red-700 ml-1"
+                                      x-text="'(+' + t.dist_above_pct.toFixed(2) + '%)'"></span>
+                            </span>
+                        </template>
+                        <template x-if="t.nearest_above == null">
+                            <span class="text-stone-400">—</span>
+                        </template>
+                    </td>
+                    <td class="py-2 mono text-right">
+                        <template x-if="t.nearest_below != null">
+                            <span>
+                                <span class="text-stone-500" x-text="'$' + t.nearest_below"></span>
+                                <span class="text-emerald-700 ml-1"
+                                      x-text="'(-' + t.dist_below_pct.toFixed(2) + '%)'"></span>
+                            </span>
+                        </template>
+                        <template x-if="t.nearest_below == null">
+                            <span class="text-stone-400">—</span>
+                        </template>
+                    </td>
+                    <td class="py-2 mono text-right text-emerald-700 font-medium"
+                        x-text="t.actual_pct != null ? (t.actual_pct >= 0 ? '+' : '') + t.actual_pct.toFixed(1) + '%' : '—'"></td>
+                    <td class="py-2 mono text-right text-fuchsia-700"
+                        x-text="t.mfe_in_pct != null ? (t.mfe_in_pct >= 0 ? '+' : '') + t.mfe_in_pct.toFixed(1) + '%' : '—'"></td>
+                    <td class="py-2 mono text-right text-stone-600"
+                        x-text="t.capture_pct != null ? t.capture_pct + '%' : '—'"></td>
+                    <td class="py-2 mono text-right pr-5 text-emerald-600"
+                        x-text="(t.realized_pnl >= 0 ? '+' : '') + '$' + t.realized_pnl.toFixed(0)"></td>
+                </tr>
+            </template>
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{# ─── Losing trades vs levels ──────────────────────────────────────── #}
+{% if losers_data and losers_data.n_losers > 0 %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden mb-6">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">Losing trades · distance to levels</h3>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            {{ losers_data.n_losers }} losers (${{ "%.0f"|format(losers_data.summary.total_loss) }} total) ·
+            {{ losers_data.n_winners }} winners (+${{ "%.0f"|format(losers_data.summary.total_win) }})
+        </p>
+    </div>
+
+    {# Summary stat strip — median distances side-by-side #}
+    <div class="grid grid-cols-3 gap-0 border-b border-stone-200 text-[12px]">
+        {% for label, l, w in [
+            ('Distance ↓ to nearest support',    losers_data.summary.median_dist_below_losers,  losers_data.summary.median_dist_below_winners),
+            ('Distance ↑ to nearest resistance', losers_data.summary.median_dist_above_losers,  losers_data.summary.median_dist_above_winners),
+            ('Distance to nearest level',        losers_data.summary.median_dist_nearest_losers, losers_data.summary.median_dist_nearest_winners),
+        ] %}
+        <div class="px-4 py-3 {% if not loop.last %}border-r border-stone-200{% endif %}">
+            <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">{{ label }} (median)</div>
+            <div class="flex items-baseline gap-3">
+                <div>
+                    <div class="text-[10px] text-red-600">losers</div>
+                    <div class="mono font-semibold text-red-700">{{ l }}%</div>
+                </div>
+                <div>
+                    <div class="text-[10px] text-emerald-600">winners</div>
+                    <div class="mono font-semibold text-emerald-700">{{ w }}%</div>
+                </div>
+                {% if l is not none and w is not none %}
+                <div class="ml-auto text-right">
+                    <div class="text-[10px] text-stone-500">Δ</div>
+                    <div class="mono text-[11px]
+                        {% if (l - w) | abs > 0.3 %}font-semibold{% endif %}
+                        {% if (l - w) > 0 %}text-red-700{% else %}text-emerald-700{% endif %}">
+                        {{ "%+.2f"|format(l - w) }}pt
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    {# Distance bucket breakdown — winners and losers per bucket #}
+    {% if losers_data.buckets %}
+    <table class="w-full text-[12px] border-b border-stone-200">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 bg-stone-50 border-b border-stone-200">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium">Distance to nearest level</th>
+                <th class="text-right py-2 font-medium">Wins</th>
+                <th class="text-right py-2 font-medium">Losses</th>
+                <th class="text-right py-2 font-medium">Win rate</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-right py-2 pr-5 font-medium">Net P&amp;L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for b in losers_data.buckets %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2 mono font-medium">{{ b.label }}</td>
+                <td class="py-2 mono text-right text-emerald-700">{{ b.n_winners }}</td>
+                <td class="py-2 mono text-right text-red-700">{{ b.n_losers }}</td>
+                <td class="py-2 mono text-right font-medium
+                    {% if b.win_rate and b.win_rate >= 70 %}text-emerald-700
+                    {% elif b.win_rate and b.win_rate < 50 %}text-red-700{% endif %}">
+                    {% if b.win_rate is not none %}{{ b.win_rate }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right
+                    {% if b.median_roi and b.median_roi > 0 %}text-emerald-700
+                    {% elif b.median_roi and b.median_roi < 0 %}text-red-700{% endif %}">
+                    {% if b.median_roi is not none %}{{ "%+.1f"|format(b.median_roi) }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right pr-5
+                    {% if b.net_pnl > 0 %}text-emerald-600{% elif b.net_pnl < 0 %}text-red-600{% endif %}">
+                    {% if b.net_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(b.net_pnl) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# Full losers list, sorted worst-first by realized $ loss #}
+    <div x-data='{ rows: {{ losers_data.losers | tojson }},
+                   sortKey: "realized_pnl", sortDir: 1,
+                   sort(k) {
+                       if (this.sortKey === k) { this.sortDir = -this.sortDir; }
+                       else { this.sortKey = k; this.sortDir = (k === "realized_pnl" || k === "actual_pct") ? 1 : -1; }
+                       this.rows.sort((a, b) => {
+                           const av = a[k] ?? 1e9, bv = b[k] ?? 1e9;
+                           if (typeof av === "string") return this.sortDir * av.localeCompare(bv);
+                           return this.sortDir * ((av > bv) - (av < bv));
+                       });
+                   },
+                   arrow(k) { return this.sortKey === k ? (this.sortDir === -1 ? "↓" : "↑") : ""; }
+                 }'>
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500 bg-stone-50">
+                <tr>
+                    <th class="text-left  px-5 py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('entry_ts')">
+                        Date <span x-text="arrow('entry_ts')"></span>
+                    </th>
+                    <th class="text-left  py-2 font-medium">Contract</th>
+                    <th class="text-right py-2 font-medium">Underlying@entry</th>
+                    <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('dist_above_pct')">
+                        ↑ to resistance <span x-text="arrow('dist_above_pct')"></span>
+                    </th>
+                    <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('dist_below_pct')">
+                        ↓ to support <span x-text="arrow('dist_below_pct')"></span>
+                    </th>
+                    <th class="text-right py-2 font-medium cursor-pointer hover:text-stone-900" @click="sort('actual_pct')">
+                        Realized <span x-text="arrow('actual_pct')"></span>
+                    </th>
+                    <th class="text-right py-2 font-medium">MFE in</th>
+                    <th class="text-right py-2 pr-5 font-medium cursor-pointer hover:text-stone-900" @click="sort('realized_pnl')">
+                        P&amp;L <span x-text="arrow('realized_pnl')"></span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+                <template x-for="t in rows" :key="t.intent_id">
+                    <tr class="hover:bg-stone-50 cursor-pointer"
+                        @click="window.location.href='/trades/' + t.intent_id">
+                        <td class="px-5 py-2 mono text-stone-500 text-[11px]"
+                            x-text="t.entry_ts ? t.entry_ts.slice(0,10) : '—'"></td>
+                        <td class="py-2 mono">
+                            <span class="font-medium" x-text="t.ticker"></span>
+                            <span class="text-stone-500"
+                                  x-text="(t.strike % 1 === 0 ? t.strike.toFixed(0) : t.strike) + t.right"></span>
+                        </td>
+                        <td class="py-2 mono text-right"
+                            x-text="t.underlying ? '$' + t.underlying.toFixed(2) : '—'"></td>
+                        <td class="py-2 mono text-right">
+                            <template x-if="t.nearest_above != null">
+                                <span>
+                                    <span class="text-stone-500" x-text="'$' + t.nearest_above"></span>
+                                    <span class="text-red-700 ml-1"
+                                          x-text="'(+' + t.dist_above_pct.toFixed(2) + '%)'"></span>
+                                </span>
+                            </template>
+                            <template x-if="t.nearest_above == null">
+                                <span class="text-stone-400">—</span>
+                            </template>
+                        </td>
+                        <td class="py-2 mono text-right">
+                            <template x-if="t.nearest_below != null">
+                                <span>
+                                    <span class="text-stone-500" x-text="'$' + t.nearest_below"></span>
+                                    <span class="text-emerald-700 ml-1"
+                                          x-text="'(-' + t.dist_below_pct.toFixed(2) + '%)'"></span>
+                                </span>
+                            </template>
+                            <template x-if="t.nearest_below == null">
+                                <span class="text-stone-400">—</span>
+                            </template>
+                        </td>
+                        <td class="py-2 mono text-right text-red-700 font-medium"
+                            x-text="t.actual_pct != null ? (t.actual_pct >= 0 ? '+' : '') + t.actual_pct.toFixed(1) + '%' : '—'"></td>
+                        <td class="py-2 mono text-right text-fuchsia-700"
+                            x-text="t.mfe_in_pct != null ? (t.mfe_in_pct >= 0 ? '+' : '') + t.mfe_in_pct.toFixed(1) + '%' : '—'"></td>
+                        <td class="py-2 mono text-right pr-5 text-red-600"
+                            x-text="(t.realized_pnl >= 0 ? '+' : '') + '$' + t.realized_pnl.toFixed(0)"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{# ─── ATH break detail list ────────────────────────────────────────── #}
+{% if data.ath_recent %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h3 class="text-[13px] font-semibold text-stone-700">ATH break trades</h3>
+        <span class="text-[11px] text-stone-500">
+            entries above all mapped resistance · {{ data.ath_recent|length }} most recent
+        </span>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium">When</th>
+                <th class="text-left  py-2 font-medium">Contract</th>
+                <th class="text-right py-2 font-medium">Underlying</th>
+                <th class="text-right py-2 font-medium">Top resistance</th>
+                <th class="text-right py-2 font-medium">Above by</th>
+                <th class="text-right py-2 font-medium">Realized</th>
+                <th class="text-right py-2 pr-5 font-medium">P&amp;L</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for t in data.ath_recent %}
+            <tr class="hover:bg-stone-50 cursor-pointer"
+                onclick="window.location.href='/trades/{{ t.intent_id }}'">
+                <td class="px-5 py-2 mono text-stone-500 text-[11px]">{{ t.first_entry_ts[:10] if t.first_entry_ts else "—" }}</td>
+                <td class="py-2 mono">
+                    <span class="font-medium">{{ t.ticker }}</span>
+                    <span class="text-stone-500">{% if t.strike == t.strike|int %}{{ t.strike|int }}{% else %}{{ t.strike }}{% endif %}{{ t.right }}</span>
+                </td>
+                <td class="py-2 mono text-right">${{ "%.2f"|format(t.underlying_at_entry) }}</td>
+                <td class="py-2 mono text-right text-stone-500">${{ "%.2f"|format(t.nearest_below or 0) }}</td>
+                <td class="py-2 mono text-right text-fuchsia-700">
+                    {% if t.nearest_below %}
+                        +{{ "%.2f"|format(((t.underlying_at_entry - t.nearest_below) / t.nearest_below * 100)) }}%
+                    {% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right
+                    {% if t.actual_pct > 0 %}text-emerald-700 font-medium
+                    {% elif t.actual_pct < 0 %}text-red-700{% endif %}">
+                    {% if t.actual_pct is not none %}{{ "%+.1f"|format(t.actual_pct) }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 pr-5 mono text-right
+                    {% if t.realized_pnl > 0 %}text-emerald-600
+                    {% elif t.realized_pnl < 0 %}text-red-600{% endif %}">
+                    {% if t.realized_pnl >= 0 %}+{% endif %}${{ "%.0f"|format(t.realized_pnl) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% endblock %}

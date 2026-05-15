@@ -40,27 +40,43 @@ SYSTEM_PROMPT = """You are a trading strategy analyst for a retail options \
 trader who follows a level-based discretionary framework.
 
 Your job: analyze the trader's pregame plan against historical reference \
-trade data and the strategy guide, then give them an actionable read.
+trade data and the strategy guide, then output a structured per-pick verdict.
 
-Your response style:
-- Terse and action-first. Lead with the punchline. No hedging.
-- Use MEDIANS not means for per-trade outcomes (option returns are heavily \
-skewed; means are tail-noise).
-- Ground every claim in either historical stats provided OR named rules \
-from the strategy guide.
-- Never invent rules. If a thesis isn't backed by data, say so.
+PER-PICK OUTPUT — be RUTHLESSLY concise. Each field has a tight word cap.
+- plan         — the actual trade in ONE clause. ≤18 words. Entry condition \
++ structure (e.g. "ATM/1-OTM call on PDH reclaim above 700"). \
+No commentary, no rationale, just the trade.
+- invalidation — the ONE price or condition that kills it. ≤12 words. \
+PREFER the `stop_ref_level` from the Setup eval when one is provided \
+(e.g. "falls below 697.30"). No "if X, do Y" — just the trigger.
+- edge         — historical stats as inline shorthand. Format: \
+"cohort +MED%/WR% (n=N) · you +MED%/WR% (n=N)". Use exact numbers from the \
+data block. If a side has no history, write "you n=0".
+- risk         — ONE sentence, ≤20 words. The single most important risk. \
+WHEN the Setup eval shows R:R verdict POOR or INCOMPLETE, the risk MUST \
+lead with that explicitly (e.g. "R:R 0.69 — risking 1.14% to capture \
+0.78%; setup gives more than it gets"). When the level is OFF-level (not on \
+or near a published support/resistance), call that out too. Otherwise lead \
+with personal-record gaps when relevant.
+- reasoning    — OPTIONAL single short sentence (≤15 words) only when the \
+verdict needs context the four fields above don't carry. Skip otherwise.
 
-Default risk posture (override if user has configured differently):
-- Pre-FOMC (Tue → Wed 14:30 ET of FOMC week) and CPI release days are HARD \
-SKIPS. If today qualifies, surface that prominently.
-- Familiar tickers only. Unfamiliar tickers default to WATCH-ONLY.
+DAY READ
+- headline — one sentence, ≤15 words.
+- regime_assessment — ONE sentence, ≤20 words.
+
+OPERATIONAL NOTES
+- Maximum 3 bullets. Each ≤18 words. Bullets that just restate a pick are wasted.
+
+OTHER RULES
+- Use MEDIANS not means for per-trade outcomes.
+- Never invent rules. Cite named strategy-guide rules only when relevant.
+- Pre-FOMC (Tue → Wed 14:30 ET of FOMC week) and CPI release days = HARD SKIP. \
+Surface in blackouts_or_warnings.
+- Unfamiliar tickers default to WATCH (verdict) and skip (size).
 - Index strikes (QQQ/SPX/SPY): ATM or 1-OTM only.
-- Sized-for-zero is the default risk frame.
 
-Output a single JSON object matching the schema. Be concise.
-
-If a strategy guide is provided below, cite specific rule names when they \
-apply. If not, base claims on historical stats only.
+Output a single JSON object matching the schema.
 
 ═══════════════════ STRATEGY GUIDE ═══════════════════
 
@@ -105,25 +121,34 @@ OUTPUT_SCHEMA = {
                     "ticker": {"type": "string"},
                     "verdict": {
                         "type": "string",
-                        "enum": ["LIKE", "WATCH", "PASS"],
-                        "description": "Soft lean per memory: never absolute GO/PASS verdicts."
-                    },
-                    "reasoning": {
-                        "type": "string",
-                        "description": "2-3 sentences. Cite historical median ROI / win rate / n where relevant. Reference named rules."
-                    },
-                    "key_risks": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Top 1-3 specific risks for this pick."
+                        "enum": ["LIKE", "WATCH", "PASS"]
                     },
                     "suggested_size": {
                         "type": "string",
-                        "enum": ["full", "half", "quarter", "skip"],
-                        "description": "Size suggestion based on confluence count + setup quality."
+                        "enum": ["full", "half", "quarter", "skip"]
+                    },
+                    "plan": {
+                        "type": "string",
+                        "description": "The trade in one clause. ≤18 words. Entry condition + structure only. No rationale."
+                    },
+                    "invalidation": {
+                        "type": "string",
+                        "description": "The single price or condition that kills the trade. ≤12 words."
+                    },
+                    "edge": {
+                        "type": "string",
+                        "description": "Cohort + personal stats inline, e.g. 'cohort +39%/99% (n=90) · you +23%/70% (n=20)'. Use 'n=0' if no history."
+                    },
+                    "risk": {
+                        "type": "string",
+                        "description": "The one risk that matters most. ≤20 words. Lead with personal-record divergence when relevant."
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "OPTIONAL one short sentence (≤15 words) only when plan/edge/risk don't carry the context."
                     }
                 },
-                "required": ["ticker", "verdict", "reasoning", "key_risks", "suggested_size"],
+                "required": ["ticker", "verdict", "suggested_size", "plan", "invalidation", "edge", "risk"],
                 "additionalProperties": False
             }
         },
@@ -140,6 +165,21 @@ OUTPUT_SCHEMA = {
 
 def _build_user_prompt(parsed: dict, today: str) -> str:
     """Construct the per-request user prompt from parsed pregame data."""
+    # Pull the latest published support/resistance levels for every
+    # ticker appearing in this pregame. Levels are sourced from the
+    # Settings → Levels tab (manually curated chartist snapshots).
+    from . import levels as _lv
+    seen_tickers = set()
+    for c in parsed.get("candidates", []):
+        seen_tickers.add(c.ticker.upper())
+    for c in parsed.get("watch_candidates", []):
+        seen_tickers.add(c.ticker.upper())
+    ticker_levels: dict[str, Any] = {}
+    for tkr in seen_tickers:
+        snap = _lv.latest_for_ticker(tkr)
+        if snap is not None:
+            ticker_levels[tkr] = snap
+
     lines = [f"Today: {today}", ""]
     lines.append("PREGAME RAW TEXT (sections):")
     for name, content in parsed["sections"].items():
@@ -159,14 +199,76 @@ def _build_user_prompt(parsed: dict, today: str) -> str:
             lines.append(f"  {m['ticker']} {m['direction']} {m['level']} (from: '{m.get('raw_line','')[:80]}')")
         lines.append("")
 
+    if ticker_levels:
+        lines.append("PUBLISHED LEVELS (chartist snapshots, latest per ticker):")
+        for tkr in sorted(ticker_levels.keys()):
+            snap = ticker_levels[tkr]
+            below = ", ".join(f"{v:g}" for v in snap.levels_below) or "—"
+            above = ", ".join(f"{v:g}" for v in snap.levels_above) or "—"
+            asof  = snap.asof_ts[:10]
+            cp    = f"${snap.current_price:g}" if snap.current_price else "—"
+            lines.append(
+                f"  {tkr}  (asof {asof}, snap price {cp}):"
+                f"  support [{below}]  ·  resistance [{above}]"
+            )
+        lines.append(
+            "Use these as the authoritative level set. When a pick references "
+            "a level that's NOT in the published support/resistance, call it "
+            "out as 'off-level' in the risk field."
+        )
+        lines.append("")
+
     lines.append(f"PRE-GAME PICKS (n={len(parsed['candidates'])}):")
     for c in parsed["candidates"]:
+        # Deterministic setup evaluation against published levels.
+        # We pre-compute it server-side and inject the facts so Claude
+        # can ground its plan/risk fields in real numbers instead of
+        # making up R/R from the price tick.
+        ev = _lv.evaluate_pick_level(c.ticker, c.level, c.direction)
+        if ev is not None:
+            level_str = (
+                f"ON published ${ev['matched_level']:g}"
+                if ev["level_status"] == "on"
+                else f"NEAR published ${ev['matched_level']:g} ({ev['matched_dist_pct']}% off)"
+                if ev["level_status"] == "near"
+                else f"OFF — closest published ${ev['matched_level'] or '?'} is {ev['matched_dist_pct']}% away"
+                if ev["matched_level"] is not None
+                else "OFF — entry is above ALL mapped levels (ATH territory)"
+            )
+            stop_t   = ev["stop_ref_level"]
+            tgt_t    = ev["target_ref_level"]
+            rew      = ev["reward_pct"]
+            risk_v   = ev["risk_pct"]
+            rr       = ev["rr_ratio"]
+            verdict  = ev["rr_verdict"].upper()
+            rr_str = (
+                f"reward {rew}% (target ${tgt_t:g}) · risk {risk_v}% (stop ${stop_t:g}) "
+                f"· R:R {rr:.2f} → {verdict}"
+                if rr is not None
+                else (
+                    f"reward {rew}% (target ${tgt_t:g}) · NO mapped stop level "
+                    f"→ {verdict}"
+                    if rew is not None and tgt_t is not None
+                    else f"risk {risk_v}% (stop ${stop_t:g}) · NO mapped target level "
+                         f"(above all resistance) → {verdict}"
+                    if risk_v is not None and stop_t is not None
+                    else f"→ {verdict} (no mapped levels around entry)"
+                )
+            )
+            try:
+                c._setup_eval = ev   # stash for downstream render (frozen=False)
+            except Exception:
+                pass
+
         b_all = c.historical["reference"]["all"]
         b_calls = c.historical["reference"]["calls"]
         s_all = c.historical["user"]["all"]
         lines.append(
             f"  {c.ticker} {c.direction} {c.level:g}  score={c.score:.0f}"
         )
+        if ev is not None:
+            lines.append(f"    Setup eval: level {level_str}")
+            lines.append(f"                {rr_str}")
 
         def _fmt_stats(label: str, st: dict) -> str:
             n = st.get("n", 0)
@@ -240,6 +342,12 @@ def analyze_pregame(parsed: dict, pregame_date: str,
     if not force:
         cached = get_cached(pregame_date)
         if cached:
+            # Re-merge setup eval against the CURRENT levels snapshot. The
+            # Claude response is cached forever; the setup numbers track
+            # live levels so old cached pregames pick up newly published
+            # levels without requiring re-analysis.
+            if cached.get("analysis"):
+                cached["analysis"] = _merge_setup_eval(cached["analysis"], parsed)
             return {**cached, "cached": True}
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -309,6 +417,12 @@ def analyze_pregame(parsed: dict, pregame_date: str,
             "cached": False,
         }
 
+    # Merge the deterministic setup eval into each pick (by ticker match)
+    # and compute a day-level R:R distribution. Server-attached, not
+    # Claude-generated — so the eval can never be misstated in the LLM
+    # response and the rendered card always shows the real numbers.
+    analysis = _merge_setup_eval(analysis, parsed)
+
     result = {
         "status": "ok",
         "analysis": analysis,
@@ -325,3 +439,50 @@ def analyze_pregame(parsed: dict, pregame_date: str,
     }
     _save_cache(pregame_date, result)
     return result
+
+
+def _merge_setup_eval(analysis: dict, parsed: dict) -> dict:
+    """Attach setup-evaluation numbers to each Claude-emitted pick (by
+    ticker match against the parsed candidates) and compute a day-level
+    R:R distribution. Returns the same analysis dict, mutated in place."""
+    from . import levels as _lv
+
+    # Build a (ticker → eval) lookup from the parsed candidates
+    eval_by_ticker: dict[str, dict] = {}
+    for c in parsed.get("candidates", []):
+        ev = _lv.evaluate_pick_level(c.ticker, c.level, c.direction)
+        if ev is None:
+            continue
+        eval_by_ticker[c.ticker.upper()] = {
+            "entry_level":    c.level,
+            "direction":      c.direction,
+            **ev,
+        }
+
+    # Attach to each Claude pick. Picks Claude generated for tickers
+    # outside `candidates` (rare) just don't get an eval and render
+    # without the Setup row.
+    counts = {"good": 0, "fair": 0, "poor": 0, "incomplete": 0, "no_eval": 0}
+    on_level_count = 0
+    off_level_count = 0
+    for p in analysis.get("picks", []):
+        tkr = (p.get("ticker") or "").upper()
+        if tkr in eval_by_ticker:
+            p["setup_eval"] = eval_by_ticker[tkr]
+            counts[eval_by_ticker[tkr]["rr_verdict"]] += 1
+            if eval_by_ticker[tkr]["level_status"] in ("on", "near"):
+                on_level_count += 1
+            else:
+                off_level_count += 1
+        else:
+            counts["no_eval"] += 1
+
+    analysis["setup_summary"] = {
+        **counts,
+        "n_total":      len(analysis.get("picks", [])),
+        "on_level":     on_level_count,
+        "off_level":    off_level_count,
+        "poor_pct":     round(counts["poor"] / max(1, len(analysis.get("picks", []))) * 100),
+        "good_pct":     round(counts["good"] / max(1, len(analysis.get("picks", []))) * 100),
+    }
+    return analysis

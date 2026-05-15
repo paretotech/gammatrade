@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+
+{% block page_meta %}
+<span class="text-stone-500 text-sm">{{ data.date }}</span>
+{% endblock %}
+
+{% block content %}
+
+{# Morning briefing — pure composition of existing analytics into a
+   single daily-routine artifact. No new computation; just a different
+   lens on data already maintained elsewhere. #}
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+
+    {# Performance strip — left column, full-height card #}
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <h2 class="text-[15px] font-semibold text-stone-700 mb-3">Performance</h2>
+
+        <div class="space-y-3">
+            <div>
+                <div class="text-[10px] uppercase tracking-wider text-stone-500">Today</div>
+                <div class="flex items-baseline gap-2">
+                    <div class="mono text-xl font-semibold
+                        {% if data.perf.today_pnl > 0 %}text-emerald-700
+                        {% elif data.perf.today_pnl < 0 %}text-red-700
+                        {% else %}text-stone-700{% endif %}">
+                        {% if data.perf.today_pnl >= 0 %}+${{ "%.0f"|format(data.perf.today_pnl) }}{% else %}-${{ "%.0f"|format(data.perf.today_pnl|abs) }}{% endif %}
+                    </div>
+                    <span class="text-[11px] text-stone-500">{{ data.perf.today_n }} trade{{ "s" if data.perf.today_n != 1 else "" }}</span>
+                </div>
+                <div class="text-[11px] text-stone-500 mt-0.5">
+                    budget left
+                    <span class="mono {{ 'text-amber-700' if data.perf.remaining < 200 else 'text-stone-700' }}">
+                        ${{ "%.0f"|format(data.perf.remaining) }}
+                    </span>
+                </div>
+            </div>
+
+            <div class="pt-3 border-t border-stone-100">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500">Cumulative</div>
+                <div class="mono text-lg font-semibold
+                    {% if data.perf.current_pnl > 0 %}text-emerald-700
+                    {% elif data.perf.current_pnl < 0 %}text-red-700{% endif %}">
+                    {% if data.perf.current_pnl >= 0 %}+${{ "%.0f"|format(data.perf.current_pnl) }}{% else %}-${{ "%.0f"|format(data.perf.current_pnl|abs) }}{% endif %}
+                </div>
+                {% if data.perf.current_drawdown < 0 %}
+                <div class="text-[11px] mono text-amber-700 mt-0.5">
+                    ${{ "%.0f"|format(data.perf.current_drawdown) }} from peak
+                </div>
+                {% endif %}
+            </div>
+
+            {# Last 5 trades — outcome icons + ticker only, tight glance row #}
+            {% if data.perf.last_5 %}
+            <div class="pt-3 border-t border-stone-100">
+                <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1.5">Last 5</div>
+                <div class="space-y-1">
+                    {% for t in data.perf.last_5 %}
+                    <a href="/trades/{{ t.intent_id }}"
+                       class="flex items-baseline justify-between text-[12px] hover:bg-stone-50 -mx-1 px-1 rounded">
+                        <span class="flex items-baseline gap-1.5">
+                            <span class="text-[9px]">{{ "🟢" if t.is_winner else "🔴" }}</span>
+                            <span class="mono text-stone-700">{{ t.ticker }}</span>
+                            <span class="text-[10px] text-stone-400">{{ t.exit_date }}</span>
+                        </span>
+                        <span class="mono
+                            {% if t.is_winner %}text-emerald-700{% else %}text-red-700{% endif %}">
+                            {% if t.realized_pnl >= 0 %}+${{ "%.0f"|format(t.realized_pnl) }}{% else %}-${{ "%.0f"|format(t.realized_pnl|abs) }}{% endif %}
+                        </span>
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# Pregame summary — middle column #}
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Today's pregame</h2>
+            {% if data.pregame %}
+            <a href="/pregame/{{ data.date }}" class="text-[11px] text-emerald-700 hover:underline">open →</a>
+            {% endif %}
+        </div>
+
+        {% if not data.pregame %}
+        <div class="text-[12px] text-stone-500">
+            No pregame cached for {{ data.date }}.
+            <a href="/pregame" class="text-emerald-700 hover:underline">Run analysis →</a>
+        </div>
+        {% else %}
+        <div class="space-y-2">
+            {% if data.pregame.headline %}
+            <div class="text-[13px] text-stone-700 italic leading-snug">{{ data.pregame.headline }}</div>
+            {% endif %}
+            {% if data.pregame.conviction %}
+            <span class="inline-block text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded
+                {% if data.pregame.conviction == 'high' %}bg-emerald-50 text-emerald-700
+                {% elif data.pregame.conviction == 'low' %}bg-amber-50 text-amber-700
+                {% else %}bg-stone-100 text-stone-700{% endif %}">
+                {{ data.pregame.conviction }} conviction
+            </span>
+            {% endif %}
+
+            {% if data.pregame.summary %}
+            {% set ss = data.pregame.summary %}
+            <div class="text-[11px] text-stone-600 mono">
+                {% if ss.good %}<span class="text-emerald-700">{{ ss.good }} good</span> · {% endif %}
+                {% if ss.fair %}<span>{{ ss.fair }} fair</span> · {% endif %}
+                {% if ss.poor %}<span class="text-red-700">{{ ss.poor }} poor</span> · {% endif %}
+                {% if ss.incomplete %}<span class="text-amber-700">{{ ss.incomplete }} incomplete</span>{% endif %}
+            </div>
+            {% endif %}
+
+            {% if data.pregame.warnings %}
+            <div class="flex flex-wrap gap-1">
+                {% for w in data.pregame.warnings %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-red-50 text-red-700">⚠ {{ w }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <div class="pt-2 border-t border-stone-100 space-y-1">
+                {% for p in data.pregame.picks %}
+                <div class="flex items-baseline justify-between text-[12px]">
+                    <span class="flex items-baseline gap-1.5">
+                        <span class="mono font-medium">{{ p.ticker }}</span>
+                        <span class="text-[10px] uppercase
+                            {% if p.verdict == 'LIKE' %}text-emerald-700
+                            {% elif p.verdict == 'WATCH' %}text-stone-700
+                            {% else %}text-red-700{% endif %}">{{ p.verdict }}</span>
+                        <span class="text-[10px] text-stone-500">{{ p.size }}</span>
+                    </span>
+                    {% if p.rr %}
+                    <span class="text-[10px] mono
+                        {% if p.rr == 'good' %}text-emerald-700
+                        {% elif p.rr == 'poor' %}text-red-700
+                        {% elif p.rr == 'incomplete' %}text-amber-700
+                        {% else %}text-stone-500{% endif %}">{{ p.rr }} R:R</span>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    {# Levels to watch — right column #}
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-[15px] font-semibold text-stone-700">Levels to watch</h2>
+            <a href="/settings/levels" class="text-[11px] text-emerald-700 hover:underline">all levels →</a>
+        </div>
+        {% if data.near_levels %}
+        <div class="space-y-1.5">
+            {% for n in data.near_levels %}
+            <div class="text-[12px] border-l-2 pl-2
+                {% if n.stale %}border-amber-400{% else %}border-emerald-400{% endif %}">
+                <div class="flex items-baseline justify-between">
+                    <span class="mono font-medium">{{ n.ticker }}</span>
+                    <span class="mono text-stone-700">${{ "%.2f"|format(n.live) }}</span>
+                </div>
+                <div class="text-[10px] text-stone-500">{{ n.reasons[0] }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-[12px] text-stone-500">
+            No tickers near levels right now.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{# Watchlist — full width #}
+{% if data.watchlist %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <div class="px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">Watchlist · recent tickers</h2>
+        <p class="text-[11px] text-stone-500 mt-0.5">
+            Tickers you've traded recently with their historical win rate and most-common setup tags.
+        </p>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[10px] uppercase tracking-wider text-stone-500 bg-stone-50">
+            <tr>
+                <th class="text-left  px-5 py-2 font-medium">Ticker</th>
+                <th class="text-right py-2 font-medium">N trades</th>
+                <th class="text-right py-2 font-medium">Win rate</th>
+                <th class="text-right py-2 font-medium">Median ROI</th>
+                <th class="text-left  pl-6 py-2 font-medium">Top setup tags</th>
+                <th class="pr-5"></th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for w in data.watchlist %}
+            <tr class="hover:bg-stone-50">
+                <td class="px-5 py-2 mono font-medium">{{ w.ticker }}</td>
+                <td class="py-2 mono text-right text-stone-500">{{ w.n }}</td>
+                <td class="py-2 mono text-right font-medium
+                    {% if w.wr and w.wr >= 70 %}text-emerald-700
+                    {% elif w.wr and w.wr < 50 %}text-red-700{% endif %}">
+                    {% if w.wr is not none %}{{ w.wr }}%{% else %}—{% endif %}
+                </td>
+                <td class="py-2 mono text-right
+                    {% if w.median_roi and w.median_roi > 0 %}text-emerald-700
+                    {% elif w.median_roi and w.median_roi < 0 %}text-red-700{% endif %}">
+                    {% if w.median_roi is not none %}{{ "%+.1f"|format(w.median_roi) }}%{% else %}—{% endif %}
+                </td>
+                <td class="pl-6 py-2 text-[11px] text-stone-600">
+                    {% for tg in w.top_tags %}
+                    <span class="inline-block mono px-1.5 py-0.5 rounded bg-stone-100 text-stone-700 mr-1">{{ tg }}</span>
+                    {% endfor %}
+                </td>
+                <td class="pr-5 py-2 text-right">
+                    <a href="/analytics/trades?range=all" class="text-[11px] text-emerald-700 hover:underline">trades →</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% endblock %}

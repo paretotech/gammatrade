@@ -216,20 +216,25 @@
 
 <!-- Monthly calendar — Notion-style: light bg, no color blocks, color via text only -->
 {% if calendar %}
-<div class="mb-8">
+{# The prev/next links save the current scroll Y to sessionStorage right before
+   navigation; the inline script at the bottom of this block restores it on
+   page load. Net effect: paging months feels like an in-place swap. #}
+<div class="mb-8" id="calendar">
     <div class="flex items-center justify-between mb-4 px-1">
         <div class="flex items-center gap-1">
             <a href="/analytics/pnl?range={{ range_key }}&month={{ calendar.prev_month }}"
+               onclick="sessionStorage.setItem('pnl_calendar_scrollY', window.scrollY)"
                class="w-7 h-7 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors">‹</a>
             <h2 class="text-[20px] font-semibold tracking-tight text-stone-900 px-2">{{ calendar.label }}</h2>
             <a href="/analytics/pnl?range={{ range_key }}&month={{ calendar.next_month }}"
+               onclick="sessionStorage.setItem('pnl_calendar_scrollY', window.scrollY)"
                class="w-7 h-7 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors">›</a>
         </div>
         <div class="flex items-center gap-3 text-[12px] text-stone-500">
             <span>{{ calendar.month_trades }} trades</span>
             <span class="text-stone-300">·</span>
             <span class="font-semibold text-stone-900 mono {% if calendar.month_total > 0 %}text-emerald-700{% elif calendar.month_total < 0 %}text-red-700{% endif %}">
-                {% if calendar.month_total >= 0 %}+{% endif %}${{ "{:,.0f}".format(calendar.month_total) }}
+                ${{ "{:,.0f}".format(calendar.month_total|abs) }}
             </span>
             <span class="text-stone-300">·</span>
             <span>{{ calendar.month_win_rate }}% win rate</span>
@@ -263,7 +268,7 @@
                                 {% if day.pnl > 0 %}text-emerald-700
                                 {% elif day.pnl < 0 %}text-red-700
                                 {% else %}text-stone-500{% endif %}">
-                        {% if day.pnl >= 0 %}+{% endif %}${{ "{:,.0f}".format(day.pnl|abs) if day.pnl < 0 else "{:,.0f}".format(day.pnl) }}
+                        ${{ "{:,.0f}".format(day.pnl|abs) }}
                     </div>
                     <div class="text-[11px] text-stone-500 mt-auto">
                         {{ day.n_trades }} trade{{ '' if day.n_trades == 1 else 's' }}{% if day.win_rate is not none %} · {{ day.win_rate|int }}%{% endif %}
@@ -282,7 +287,7 @@
                 <div class="text-[10px] uppercase tracking-wider text-stone-500 font-medium">{{ wt.label }}</div>
                 <div class="mono font-semibold text-[15px] mt-1 leading-tight
                             {% if wt.pnl > 0 %}text-emerald-700{% elif wt.pnl < 0 %}text-red-700{% else %}text-stone-400{% endif %}">
-                    {% if wt.pnl >= 0 %}+{% endif %}${{ "{:,.0f}".format(wt.pnl) }}
+                    ${{ "{:,.0f}".format(wt.pnl|abs) }}
                 </div>
                 {% if wt.n_days > 0 %}
                 <div class="text-[11px] text-stone-500 mt-1">{{ wt.n_days }}d · {{ wt.n_trades }}t</div>
@@ -293,45 +298,95 @@
 </div>
 {% endif %}
 
-<!-- Cumulative P&L sparkline -->
-<div class="bg-white border border-stone-200 rounded-lg p-5">
-    <div class="flex items-baseline justify-between mb-4">
-        <h2 class="text-[15px] font-semibold text-stone-700">Cumulative P&L · last 30 days</h2>
-        <span class="text-[11px] text-stone-500">{{ series|length }} trading-day buckets</span>
+<!-- Equity curve + drawdown — per-trade cumulative realized $ -->
+{% if equity and equity.series %}
+<div class="bg-white border border-stone-200 rounded-lg p-5"
+     x-data='equityCurve({{ equity | tojson }})'
+     x-init="render()">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Equity curve · all closed trades</h2>
+        <span class="text-[11px] text-stone-500">{{ equity.n_trades }} trades</span>
     </div>
 
-    {% if series %}
-    {% set max_cum = series | map(attribute='cumulative') | max %}
-    {% set min_cum = series | map(attribute='cumulative') | min %}
-    {% set range_cum = (max_cum - min_cum) if (max_cum - min_cum) > 0 else 1 %}
-    <svg viewBox="0 0 {{ series|length * 20 }} 80" class="w-full h-24" preserveAspectRatio="none">
-        {# Zero line #}
-        {% set zero_y = 80 - ((0 - min_cum) / range_cum * 80) %}
-        <line x1="0" y1="{{ zero_y }}" x2="{{ series|length * 20 }}" y2="{{ zero_y }}"
-              stroke="#d6d3d1" stroke-dasharray="2 2" stroke-width="0.5"></line>
-
-        {# Cumulative line #}
-        <polyline fill="none" stroke="#059669" stroke-width="1.5"
-            points="{% for p in series %}{{ loop.index0 * 20 + 10 }},{{ 80 - ((p.cumulative - min_cum) / range_cum * 80) }} {% endfor %}" />
-
-        {# Daily bars (subtle) #}
-        {% for p in series %}
-            {% if p.pnl != 0 %}
-            <rect x="{{ loop.index0 * 20 + 6 }}" y="{{ zero_y if p.pnl > 0 else zero_y }}"
-                  width="8" height="{{ (p.pnl|abs) / range_cum * 80 }}"
-                  transform="{% if p.pnl < 0 %}translate(0, 0){% else %}translate(0, -{{ (p.pnl|abs) / range_cum * 80 }}){% endif %}"
-                  fill="{% if p.pnl > 0 %}#10b98133{% else %}#ef444433{% endif %}"></rect>
-            {% endif %}
-        {% endfor %}
-    </svg>
-    <div class="flex justify-between text-[11px] mono text-stone-500 mt-2">
-        <span>{{ series[0].date }}</span>
-        <span>min ${{ "%.0f"|format(min_cum) }} · max ${{ "%.0f"|format(max_cum) }}</span>
-        <span>{{ series[-1].date }}</span>
+    <div class="relative" style="height: 240px;">
+        <canvas x-ref="canvas"></canvas>
     </div>
-    {% else %}
-    <p class="text-sm text-stone-500 text-center py-8">No closed trades yet.</p>
-    {% endif %}
 </div>
+
+<!-- Chart.js loaded here since equity curve is the only chart on this page -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+function equityCurve(equity) {
+    return {
+        equity,
+        _chart: null,
+        render() {
+            const ctx = this.$refs.canvas;
+            if (!ctx || !window.Chart || !this.equity.series.length) return;
+            const labels = this.equity.series.map((_, i) => i);
+            const cumData = this.equity.series.map(p => p.cum_pnl);
+            if (this._chart) this._chart.destroy();
+            this._chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        { label: 'Cum P&L', data: cumData,
+                          borderColor: 'rgb(5, 150, 105)',
+                          backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                          borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
+                          tension: 0.1, fill: true },
+                    ],
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'nearest', intersect: false, axis: 'x' },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: {
+                            title: (items) => {
+                                if (!items.length) return '';
+                                const p = equity.series[items[0].dataIndex];
+                                return p.date + ' · ' + p.ticker;
+                            },
+                            label: (item) => {
+                                const p = equity.series[item.dataIndex];
+                                return [
+                                    'Trade P&L  ' + (p.trade_pnl >= 0 ? '+$' : '-$') + Math.abs(p.trade_pnl),
+                                    'Cumulative ' + (p.cum_pnl >= 0 ? '+$' : '-$') + Math.abs(p.cum_pnl),
+                                ];
+                            },
+                        }},
+                    },
+                    scales: {
+                        x: { display: false, grid: { display: false } },
+                        y: { grid: { color: 'rgba(0,0,0,0.04)' },
+                             ticks: { font: { size: 10 }, color: 'rgb(120, 113, 108)',
+                                      callback: (v) => '$' + v.toFixed(0) } },
+                    },
+                },
+            });
+        },
+    };
+}
+</script>
+{% endif %}
+
+{# Restore scroll position after a month-nav click. The prev/next links above
+   stash window.scrollY into sessionStorage right before navigation; here we
+   read it back, scroll there, and clear it so a fresh visit lands at the top
+   as usual. We disable the browser's automatic scroll restoration so it
+   doesn't fight us when the user uses the back button. #}
+<script>
+(() => {
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+    const y = sessionStorage.getItem('pnl_calendar_scrollY');
+    if (y !== null) {
+        sessionStorage.removeItem('pnl_calendar_scrollY');
+        // Defer to next frame so layout settles before we scroll.
+        requestAnimationFrame(() => window.scrollTo(0, parseInt(y, 10) || 0));
+    }
+})();
+</script>
 
 {% endblock %}

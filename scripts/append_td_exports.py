@@ -49,10 +49,14 @@ def main(argv=None) -> int:
     print(f"loaded {len(fills)} fills from {exports_dir}", flush=True)
 
     if not master_path.exists():
-        print(f"error: master log not found at {master_path}", file=sys.stderr)
-        return 1
-    master_df = pd.read_csv(master_path, dtype=str, keep_default_na=False)
-    print(f"existing master log: {len(master_df)} rows", flush=True)
+        # First-ever import: no master log yet. Start with an empty frame so
+        # merge_td_into_master treats every TD fill as a new append.
+        print(f"no existing master log at {master_path} — initializing empty", flush=True)
+        master_path.parent.mkdir(parents=True, exist_ok=True)
+        master_df = pd.DataFrame()
+    else:
+        master_df = pd.read_csv(master_path, dtype=str, keep_default_na=False)
+        print(f"existing master log: {len(master_df)} rows", flush=True)
 
     merged, appended, updated = merge_td_into_master(master_df, fills)
     if not appended and not updated:

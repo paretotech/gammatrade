@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_settings_tabs.html" %}
+
+<p class="text-sm text-stone-600 mb-6 leading-relaxed max-w-2xl">
+    API keys for optional integrations.
+    Keys are stored at <code class="mono">~/.gamma/automation/secrets.json</code>
+    with owner-only file permissions (0600) and are never logged.
+    A value exported in your shell always wins over what's saved here.
+    Saved keys take effect in the running process immediately — no restart needed.
+</p>
+
+{% set saved_key = request.query_params.get("saved") %}
+{% set deleted_key = request.query_params.get("deleted") %}
+{% if saved_key %}
+<div class="bg-emerald-50 border border-emerald-200 rounded p-3 text-[12px] text-emerald-800 mb-4 max-w-2xl">
+    ✓ Saved <code class="mono">{{ key_meta.get(saved_key, {}).get("label", saved_key) }}</code>. Active immediately.
+</div>
+{% elif deleted_key %}
+<div class="bg-stone-100 border border-stone-200 rounded p-3 text-[12px] text-stone-700 mb-4 max-w-2xl">
+    ✓ Cleared <code class="mono">{{ key_meta.get(deleted_key, {}).get("label", deleted_key) }}</code>.
+</div>
+{% endif %}
+
+<div class="space-y-4 max-w-2xl">
+{% for json_key, k in keys.items() %}
+    {% set meta = key_meta.get(json_key, {"label": json_key.upper(), "purpose": "", "doc_url": "", "prefix_hint": ""}) %}
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3">
+            <div>
+                <div class="text-[11px] uppercase tracking-wider text-stone-500 font-medium mono">{{ meta.label }}</div>
+                <div class="text-[11px] text-stone-400 mt-0.5">
+                    {{ meta.purpose }}
+                    {% if meta.doc_url %}
+                    <a href="{{ meta.doc_url }}" target="_blank" rel="noopener" class="text-emerald-700 hover:underline">Get key →</a>
+                    {% endif %}
+                </div>
+            </div>
+            {% if k.set %}
+            <span class="text-[11px] mono px-2 py-0.5 rounded
+                {% if k.source == 'env' %}bg-blue-50 text-blue-700 border border-blue-200
+                {% else %}bg-emerald-50 text-emerald-700 border border-emerald-200{% endif %}">
+                {% if k.source == 'env' %}set in shell{% else %}saved in app{% endif %}
+            </span>
+            {% else %}
+            <span class="text-[11px] mono px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                not set
+            </span>
+            {% endif %}
+        </div>
+
+        {% if k.set %}
+        <div class="text-[12px] mono text-stone-700 bg-stone-50 border border-stone-200 rounded px-3 py-2 mb-4">
+            current value: {{ k.masked }}
+        </div>
+        {% endif %}
+
+        {% if k.source == 'env' %}
+        <div class="text-[12px] bg-blue-50 border border-blue-200 rounded p-3 text-stone-700 mb-4">
+            Currently set via shell export — that always wins over the saved value on next restart.
+            Saving below writes to disk so it persists, but to use the saved value exclusively,
+            <code class="mono">unset {{ meta.label }}</code> in your shell and restart the server.
+        </div>
+        {% endif %}
+
+        <form method="post" action="/settings/keys/{{ json_key }}" class="space-y-3"
+              x-data="{ revealed: false }">
+            <div>
+                <label class="block text-[12px] font-medium text-stone-700 mb-1">
+                    {% if k.set %}Replace{% else %}Set{% endif %} key
+                </label>
+                <p class="text-[11px] text-stone-500 mb-1.5">
+                    Paste a key{% if meta.prefix_hint %} (starts with <code class="mono">{{ meta.prefix_hint }}</code>){% endif %}.
+                    Empty submission is ignored — use <em>Clear saved key</em> below to remove the stored value.
+                </p>
+                <div class="flex gap-2">
+                    <input :type="revealed ? 'text' : 'password'"
+                           name="value"
+                           placeholder="{{ meta.prefix_hint or 'paste key here' }}"
+                           autocomplete="off" spellcheck="false"
+                           class="mono flex-1 px-3 py-2 border border-stone-300 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                    <button type="button" @click="revealed = !revealed"
+                            class="px-3 py-2 text-[12px] text-stone-600 border border-stone-300 rounded-md hover:bg-stone-50">
+                        <span x-text="revealed ? 'Hide' : 'Show'"></span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-between pt-2">
+                <button type="submit"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-stone-900 hover:bg-stone-700 text-white text-[12px] font-medium transition-colors">
+                    Save key
+                </button>
+            </div>
+        </form>
+
+        {% if k.set and k.source == 'file' %}
+        <form method="post" action="/settings/keys/{{ json_key }}/delete" class="pt-4 mt-4 border-t border-stone-100"
+              onsubmit="return confirm('Remove the saved {{ meta.label }}? Features that depend on this key will return to the no-key state until you set it again.');">
+            <button type="submit"
+                    class="text-[11px] text-red-700 hover:underline">
+                Clear saved key
+            </button>
+        </form>
+        {% endif %}
+    </div>
+{% endfor %}
+</div>
+
+<!-- Data backfill section, dependent on the Polygon key above -->
+<div class="mt-8 max-w-2xl">
+    <h2 class="text-[13px] uppercase tracking-wider text-stone-500 font-semibold mb-3">Data backfill</h2>
+
+    {% if request.query_params.get("backfill") == "started" %}
+    <div class="bg-emerald-50 border border-emerald-200 rounded p-3 text-[12px] text-emerald-800 mb-4">
+        ✓ Backfill started in the background. Refresh in 1–2 minutes to see progress.
+    </div>
+    {% endif %}
+
+    <div class="bg-white border border-stone-200 rounded-lg p-5">
+        <div class="flex items-baseline justify-between mb-3">
+            <div>
+                <div class="text-[12px] font-medium text-stone-800">MFE / MAE backfill</div>
+                <div class="text-[11px] text-stone-500 mt-0.5">
+                    Pulls 1-minute option bars from Polygon for every closed trade and
+                    populates the max favorable / adverse excursion columns. Unlocks the
+                    Capture % column in the trade log and the time-to-TP / MFE-vs-realized
+                    panels in Analytics.
+                </div>
+            </div>
+            {% set akp = keys.polygon_api_key %}
+            <form method="post" action="/settings/backfill/mfe-mae" class="m-0">
+                <button type="submit"
+                        {% if not akp.set %}disabled title="Set POLYGON_API_KEY above first"{% endif %}
+                        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors
+                               {% if akp.set %}bg-stone-900 hover:bg-stone-700 text-white
+                               {% else %}bg-stone-200 text-stone-400 cursor-not-allowed{% endif %}">
+                    {% if mfe_backfill.done > 0 %}Re-run backfill{% else %}Run backfill{% endif %}
+                </button>
+            </form>
+        </div>
+
+        <!-- progress bar -->
+        <div class="flex items-center gap-3 text-[12px] mb-3">
+            <div class="flex-1 h-2 rounded-full bg-stone-100 overflow-hidden">
+                <div class="h-full bg-emerald-500 transition-all"
+                     style="width: {{ mfe_backfill.pct }}%"></div>
+            </div>
+            <div class="mono text-stone-600 whitespace-nowrap">
+                {{ mfe_backfill.done }} / {{ mfe_backfill.total }} closed trades
+                <span class="text-stone-400">({{ mfe_backfill.pct }}%)</span>
+            </div>
+        </div>
+
+        {% if mfe_backfill.pending > 0 and akp.set %}
+        <p class="text-[11px] text-stone-500">
+            {{ mfe_backfill.pending }} trade{{ "s" if mfe_backfill.pending != 1 else "" }}
+            still missing MFE/MAE. The backfill skips any contract whose bars are already
+            cached on disk, so re-runs are cheap.
+        </p>
+        {% elif mfe_backfill.pending == 0 and mfe_backfill.total > 0 %}
+        <p class="text-[11px] text-emerald-700">
+            All closed trades have MFE/MAE populated. Re-run only after importing more trades.
+        </p>
+        {% elif not akp.set %}
+        <p class="text-[11px] text-amber-700">
+            Set <code class="mono">POLYGON_API_KEY</code> above before running the backfill.
+        </p>
+        {% endif %}
+
+        {% if mfe_backfill_log %}
+        <details class="mt-4 text-[11px]" {% if request.query_params.get("backfill") == "started" %}open{% endif %}>
+            <summary class="cursor-pointer text-stone-500 hover:text-stone-700">Recent backfill log</summary>
+            <pre class="mt-2 p-2 bg-stone-50 border border-stone-200 rounded text-[11px] mono overflow-auto text-stone-700">{{ mfe_backfill_log }}</pre>
+        </details>
+        {% endif %}
+    </div>
+</div>
+
+{% endblock %}

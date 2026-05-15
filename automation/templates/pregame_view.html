@@ -110,6 +110,51 @@
             {% endfor %}
         </div>
         {% endif %}
+
+        {# Day-level setup-quality strip. Surfaces how the pregame's picks
+           distribute across the R:R verdict buckets and how many are
+           on/near published levels, so the trader can see at a glance
+           whether the day is loaded into low-quality setups. #}
+        {% if a.setup_summary and a.setup_summary.n_total > 0 %}
+        {% set ss = a.setup_summary %}
+        <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+            <span class="text-stone-500 uppercase tracking-wider text-[10px] font-medium">
+                Setup mix
+            </span>
+            {% if ss.good > 0 %}
+            <span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 mono">
+                {{ ss.good }} good R:R
+            </span>
+            {% endif %}
+            {% if ss.fair > 0 %}
+            <span class="px-2 py-0.5 rounded bg-stone-100 text-stone-700 border border-stone-200 mono">
+                {{ ss.fair }} fair
+            </span>
+            {% endif %}
+            {% if ss.poor > 0 %}
+            <span class="px-2 py-0.5 rounded bg-red-50 text-red-700 border border-red-200 mono"
+                  title="risk ≥ reward — setup gives more than it gets">
+                {{ ss.poor }} poor
+            </span>
+            {% endif %}
+            {% if ss.incomplete > 0 %}
+            <span class="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 mono"
+                  title="one side of the level grid missing — usually ATH/break-of-structure">
+                {{ ss.incomplete }} incomplete
+            </span>
+            {% endif %}
+            <span class="text-stone-400 ml-2 mono">·</span>
+            <span class="text-stone-500 mono">
+                {{ ss.on_level }} on/near published levels, {{ ss.off_level }} off-level
+            </span>
+
+            {% if ss.poor + ss.incomplete >= (ss.n_total | int / 2) | round %}
+            <span class="ml-auto px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 text-[11px]">
+                ⚠ {{ ss.poor + ss.incomplete }} of {{ ss.n_total }} picks have R:R issues — be selective
+            </span>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 
     <!-- Per-pick verdicts -->
@@ -117,7 +162,7 @@
     <div class="mb-4 space-y-2">
         {% for p in a.picks %}
         <div class="border border-stone-200 rounded-md px-3 py-2">
-            <div class="flex items-baseline gap-3 mb-1">
+            <div class="flex items-baseline gap-3 mb-2">
                 <span class="mono font-semibold">{{ p.ticker }}</span>
                 <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded
                     {% if p.verdict == 'LIKE' %}bg-emerald-50 text-emerald-700
@@ -125,11 +170,93 @@
                     {% else %}bg-red-50 text-red-700{% endif %}">{{ p.verdict }}</span>
                 <span class="text-[10px] uppercase tracking-wider text-stone-500">{{ p.suggested_size }} size</span>
             </div>
-            <div class="text-[12px] text-stone-700 leading-relaxed">{{ p.reasoning }}</div>
-            {% if p.key_risks %}
-            <div class="text-[11px] text-stone-500 mt-1.5">
-                Risks: {% for r in p.key_risks %}{{ r }}{% if not loop.last %} · {% endif %}{% endfor %}
-            </div>
+
+            {# New structured layout — used when the cached analysis carries the
+               plan/invalidation/edge/risk fields introduced in v0.3+. Old
+               cached entries still render via the fallback block below. #}
+            {% if p.plan %}
+            <dl class="grid gap-x-3 gap-y-1 text-[12px]"
+                style="grid-template-columns: max-content 1fr;">
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Plan</dt>
+                <dd class="text-stone-800">{{ p.plan }}</dd>
+
+                {# Deterministic setup eval — level legitimacy + R:R from the
+                   nearest published level boundaries. Server-attached, so
+                   the numbers can't be misstated by the LLM. #}
+                {% if p.setup_eval %}
+                {% set se = p.setup_eval %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Setup</dt>
+                <dd class="text-[12px] leading-relaxed">
+                    <span class="mono text-[11px]
+                        {% if se.level_status == 'on' %}text-emerald-700
+                        {% elif se.level_status == 'near' %}text-stone-700
+                        {% else %}text-amber-700{% endif %}">
+                        {% if se.level_status == 'on' %}ON {% elif se.level_status == 'near' %}NEAR {% else %}OFF {% endif %}
+                        {% if se.matched_level %}${{ "%g"|format(se.matched_level) }}{% endif %}
+                        {% if se.level_status == 'near' and se.matched_dist_pct is not none %}
+                            ({{ se.matched_dist_pct }}% off)
+                        {% endif %}
+                    </span>
+                    {% if se.rr_ratio is not none %}
+                    <span class="text-stone-500 mx-1">·</span>
+                    <span class="mono text-[11px]
+                        {% if se.rr_verdict == 'good' %}text-emerald-700 font-semibold
+                        {% elif se.rr_verdict == 'fair' %}text-stone-700
+                        {% else %}text-red-700 font-semibold{% endif %}">
+                        R:R {{ "%.2f"|format(se.rr_ratio) }} ({{ se.rr_verdict|upper }})
+                    </span>
+                    <div class="text-[11px] text-stone-500 mono mt-0.5">
+                        reward {{ se.reward_pct }}% (target ${{ "%g"|format(se.target_ref_level) }})
+                        · risk {{ se.risk_pct }}% (stop ${{ "%g"|format(se.stop_ref_level) }})
+                    </div>
+                    {% else %}
+                    <span class="text-stone-500 mx-1">·</span>
+                    <span class="mono text-[11px] text-amber-700 font-semibold">
+                        R:R INCOMPLETE
+                    </span>
+                    <div class="text-[11px] text-stone-500 mono mt-0.5">
+                        {% if se.target_ref_level is none and se.stop_ref_level is not none %}
+                            no target above — entry above all mapped resistance ·
+                            stop ${{ "%g"|format(se.stop_ref_level) }} ({{ se.risk_pct }}%)
+                        {% elif se.stop_ref_level is none and se.target_ref_level is not none %}
+                            no stop below — entry below all mapped support ·
+                            target ${{ "%g"|format(se.target_ref_level) }} ({{ se.reward_pct }}%)
+                        {% else %}
+                            no published levels around entry
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </dd>
+                {% endif %}
+
+                {% if p.invalidation %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Kill</dt>
+                <dd class="text-stone-800">{{ p.invalidation }}</dd>
+                {% endif %}
+
+                {% if p.edge %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Edge</dt>
+                <dd class="mono text-[11px] text-stone-700">{{ p.edge }}</dd>
+                {% endif %}
+
+                {% if p.risk %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-500 mt-0.5">Risk</dt>
+                <dd class="text-stone-600">{{ p.risk }}</dd>
+                {% endif %}
+
+                {% if p.reasoning %}
+                <dt class="text-[10px] uppercase tracking-wider text-stone-400 mt-0.5">Note</dt>
+                <dd class="text-stone-500 italic">{{ p.reasoning }}</dd>
+                {% endif %}
+            </dl>
+            {% else %}
+                {# Fallback for analyses cached before the structured schema. #}
+                <div class="text-[12px] text-stone-700 leading-relaxed">{{ p.reasoning }}</div>
+                {% if p.key_risks %}
+                <div class="text-[11px] text-stone-500 mt-1.5">
+                    Risks: {% for r in p.key_risks %}{{ r }}{% if not loop.last %} · {% endif %}{% endfor %}
+                </div>
+                {% endif %}
             {% endif %}
         </div>
         {% endfor %}

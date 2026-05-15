@@ -1,0 +1,410 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% include "_analytics_tabs.html" %}
+{% include "_date_range_chips.html" %}
+
+{# Two rollups answering "where am I leaving money on the table?":
+   1. MFE-vs-realized scatter — one dot per closed trade. Below-diagonal
+      cluster = systematic leakage (you exited well below your in-trade peak).
+   2. Stop-discipline aggregate — for every Stop fill across closed trades,
+      look at the next `lookback_minutes` of cached Polygon bars and measure
+      how often the option recovered past your stop level. #}
+
+{# ─── Stop-discipline header stats ─────────────────────────────────── #}
+<div class="mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Stop discipline</h2>
+        <div class="flex items-center gap-1 text-[12px]">
+            <span class="text-stone-500 mr-2">Lookback:</span>
+            {% for m in [30, 60, 120, 240] %}
+            <a href="?range={{ range_key }}&amp;lookback={{ m }}"
+               class="px-2 py-0.5 rounded border
+                      {% if lookback_minutes == m %}border-emerald-600 text-emerald-700 font-medium bg-emerald-50
+                      {% else %}border-stone-200 text-stone-500 hover:text-stone-900 hover:border-stone-300{% endif %}">
+                {{ m }}m
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if discipline.n == 0 %}
+    <div class="bg-white border border-stone-200 rounded-lg p-8 text-center text-sm text-stone-500">
+        No stops in this range, or no cached bars to measure recovery against.
+        Run the Polygon backfill on
+        <a href="/settings/keys" class="text-emerald-700 hover:underline">Settings → API keys</a>
+        if stops exist but stats are empty.
+    </div>
+    {% else %}
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div class="bg-white border border-stone-200 rounded-lg p-4">
+            <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Stops</div>
+            <div class="text-xl font-semibold mono">{{ discipline.n }}</div>
+            <div class="text-[11px] text-stone-400 mt-0.5">closed trades</div>
+        </div>
+        <div class="bg-white border border-stone-200 rounded-lg p-4">
+            <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Recovered to entry</div>
+            <div class="text-xl font-semibold mono
+                {% if discipline.pct_recovered_to_entry >= 50 %}text-red-700{% else %}text-stone-900{% endif %}">
+                {{ discipline.pct_recovered_to_entry }}%
+            </div>
+            <div class="text-[11px] text-stone-400 mt-0.5">within {{ lookback_minutes }} min</div>
+        </div>
+        <div class="bg-white border border-stone-200 rounded-lg p-4">
+            <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Recovered to floor</div>
+            <div class="text-xl font-semibold mono">{{ discipline.pct_recovered_to_floor }}%</div>
+            <div class="text-[11px] text-stone-400 mt-0.5">max(entry, prior TP)</div>
+        </div>
+        <div class="bg-white border border-stone-200 rounded-lg p-4">
+            <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Median time to peak</div>
+            <div class="text-xl font-semibold mono">{{ discipline.median_mins_to_peak }}m</div>
+            <div class="text-[11px] text-stone-400 mt-0.5">post-stop</div>
+        </div>
+        <div class="bg-white border border-stone-200 rounded-lg p-4">
+            <div class="text-[10px] uppercase tracking-wider text-stone-500 mb-1">Median giveback</div>
+            <div class="text-xl font-semibold mono">+{{ discipline.median_giveback_pct }}%</div>
+            <div class="text-[11px] text-stone-400 mt-0.5">peak vs stop · % of entry</div>
+        </div>
+    </div>
+
+    {# Quick narrative summary line so the user doesn't have to interpret the grid. #}
+    <p class="text-[12px] text-stone-600 mt-3">
+        {% if discipline.pct_recovered_to_entry >= 60 %}
+            <span class="font-medium text-red-700">Stops fire systematically too early.</span>
+            {{ discipline.pct_recovered_to_entry }}% of stops recovered to entry within {{ lookback_minutes }} min —
+            with a median peak {{ discipline.median_mins_to_peak }} min later.
+        {% elif discipline.pct_recovered_to_entry >= 40 %}
+            <span class="font-medium text-amber-700">Stops are mixed.</span>
+            About half ({{ discipline.pct_recovered_to_entry }}%) recovered to entry within {{ lookback_minutes }} min.
+        {% else %}
+            <span class="font-medium text-emerald-700">Stops look disciplined.</span>
+            Only {{ discipline.pct_recovered_to_entry }}% recovered to entry within {{ lookback_minutes }} min.
+        {% endif %}
+    </p>
+    {% endif %}
+</div>
+
+{# ─── Stop-discipline breakdowns ──────────────────────────────────── #}
+{% if discipline.n > 0 %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+
+    {# Helper: row template re-used for ticker / hour / DTE rollups. The
+       progress bar visualizes the recovered-to-entry rate (worse = more red). #}
+    {% macro breakdown_row(label, n, pct, giveback) -%}
+        <tr class="hover:bg-stone-50">
+            <td class="py-1.5 pl-3 mono font-medium">{{ label }}</td>
+            <td class="py-1.5 text-right text-stone-500 text-[11px]">{{ n }}</td>
+            <td class="py-1.5 px-2">
+                <div class="flex items-center gap-1.5">
+                    <div class="flex-1 h-1.5 bg-stone-100 rounded overflow-hidden">
+                        <div class="h-full
+                            {% if pct >= 60 %}bg-red-500
+                            {% elif pct >= 40 %}bg-amber-500
+                            {% else %}bg-emerald-500{% endif %}"
+                            style="width: {{ pct }}%"></div>
+                    </div>
+                    <span class="mono text-[11px] tabular-nums w-9 text-right
+                        {% if pct >= 60 %}text-red-700
+                        {% elif pct >= 40 %}text-amber-700
+                        {% else %}text-emerald-700{% endif %}">
+                        {{ pct }}%
+                    </span>
+                </div>
+            </td>
+            <td class="py-1.5 pr-3 mono text-right text-[11px]
+                {% if giveback >= 20 %}text-amber-700 font-medium{% else %}text-stone-500{% endif %}">
+                +{{ giveback }}%
+            </td>
+        </tr>
+    {%- endmacro %}
+
+    {# By ticker — worst recovery rate first #}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 border-b border-stone-200 flex items-baseline justify-between">
+            <h3 class="text-[12px] font-semibold text-stone-700 uppercase tracking-wider">By ticker</h3>
+            <span class="text-[10px] text-stone-400">≥2 stops · worst first</span>
+        </div>
+        {% if discipline.by_ticker %}
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500">
+                <tr>
+                    <th class="text-left  pl-3 py-1 font-medium">Ticker</th>
+                    <th class="text-right py-1 font-medium">N</th>
+                    <th class="text-left  px-2 py-1 font-medium">Recovered ↑</th>
+                    <th class="text-right pr-3 py-1 font-medium">Giveback</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+            {% for r in discipline.by_ticker %}
+                {{ breakdown_row(r.key, r.n, r.pct_recovered_to_entry, r.median_giveback_pct) }}
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-[11px] text-stone-400 text-center py-6">No tickers with ≥2 stops.</p>
+        {% endif %}
+    </div>
+
+    {# By hour of day (ET) #}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 border-b border-stone-200 flex items-baseline justify-between">
+            <h3 class="text-[12px] font-semibold text-stone-700 uppercase tracking-wider">By hour (ET)</h3>
+            <span class="text-[10px] text-stone-400">stop fill time</span>
+        </div>
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500">
+                <tr>
+                    <th class="text-left  pl-3 py-1 font-medium">Hour</th>
+                    <th class="text-right py-1 font-medium">N</th>
+                    <th class="text-left  px-2 py-1 font-medium">Recovered ↑</th>
+                    <th class="text-right pr-3 py-1 font-medium">Giveback</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+            {% for r in discipline.by_hour %}
+                {{ breakdown_row(r.label, r.n, r.pct_recovered_to_entry, r.median_giveback_pct) }}
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {# By DTE bucket #}
+    <div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 border-b border-stone-200 flex items-baseline justify-between">
+            <h3 class="text-[12px] font-semibold text-stone-700 uppercase tracking-wider">By DTE</h3>
+            <span class="text-[10px] text-stone-400">days-to-expiry at entry</span>
+        </div>
+        <table class="w-full text-[12px]">
+            <thead class="text-[10px] uppercase tracking-wider text-stone-500">
+                <tr>
+                    <th class="text-left  pl-3 py-1 font-medium">DTE</th>
+                    <th class="text-right py-1 font-medium">N</th>
+                    <th class="text-left  px-2 py-1 font-medium">Recovered ↑</th>
+                    <th class="text-right pr-3 py-1 font-medium">Giveback</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100">
+            {% for r in discipline.by_dte %}
+                {{ breakdown_row(r.key, r.n, r.pct_recovered_to_entry, r.median_giveback_pct) }}
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{# ─── MFE-vs-realized scatter ──────────────────────────────────────── #}
+<div class="bg-white border border-stone-200 rounded-lg p-5 mb-6"
+     x-data='leakageScatter({{ scatter | tojson }})'
+     x-init="render()">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-[15px] font-semibold text-stone-700">Capture cloud · MFE vs realized</h2>
+        <span class="text-[11px] text-stone-500" x-text="scatter.length + ' trades'"></span>
+    </div>
+    <p class="text-[12px] text-stone-500 mb-3">
+        Each dot is one closed trade. The diagonal = perfect capture; dots far below it = money left on the table.
+        Click a dot to open that trade.
+    </p>
+    <div class="relative" style="height: 360px;">
+        <canvas x-ref="canvas"></canvas>
+    </div>
+</div>
+
+{# ─── Recent stops detail table ───────────────────────────────────── #}
+{% if discipline.recent %}
+<div class="bg-white border border-stone-200 rounded-lg overflow-hidden">
+    <div class="flex items-baseline justify-between px-5 py-3 border-b border-stone-200">
+        <h2 class="text-[15px] font-semibold text-stone-700">Recent stops · what happened next</h2>
+        <span class="text-[11px] text-stone-500">{{ discipline.recent|length }} most recent</span>
+    </div>
+    <table class="w-full text-[12px]">
+        <thead class="text-[11px] uppercase tracking-wider text-stone-500 border-b border-stone-200">
+            <tr>
+                <th class="text-left px-5 py-2 font-medium">When</th>
+                <th class="text-left  py-2 font-medium">Contract</th>
+                <th class="text-right py-2 font-medium">Entry</th>
+                <th class="text-right py-2 font-medium">Stop</th>
+                <th class="text-right py-2 font-medium">Peak (next {{ lookback_minutes }}m)</th>
+                <th class="text-right py-2 font-medium">Mins → peak</th>
+                <th class="text-right py-2 font-medium">Giveback</th>
+                <th class="text-center py-2 font-medium pr-5">Recovered?</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+            {% for r in discipline.recent %}
+            <tr class="hover:bg-stone-50 cursor-pointer"
+                onclick="window.location.href='/trades/{{ r.intent_id }}'">
+                <td class="px-5 py-2 mono text-stone-500 text-[11px]">{{ r.stop_ts[:16] }}</td>
+                <td class="py-2 mono">
+                    <span class="font-medium">{{ r.ticker }}</span>
+                    <span class="text-stone-500">
+                        {% if r.strike == r.strike|int %}{{ r.strike|int }}{% else %}{{ r.strike }}{% endif %}{{ r.right }}
+                    </span>
+                </td>
+                <td class="py-2 mono text-right">${{ "%.2f"|format(r.entry_price) }}</td>
+                <td class="py-2 mono text-right text-red-700">${{ "%.2f"|format(r.stop_price) }}</td>
+                <td class="py-2 mono text-right text-fuchsia-700">${{ "%.2f"|format(r.post_max) }}</td>
+                <td class="py-2 mono text-right text-stone-500">{{ "%.0f"|format(r.mins_to_peak) }}m</td>
+                <td class="py-2 mono text-right
+                    {% if r.giveback_pct > 10 %}text-amber-700 font-medium{% endif %}">
+                    +{{ r.giveback_pct }}%
+                </td>
+                <td class="py-2 text-center pr-5 text-[11px]">
+                    {% if r.recovered_to_floor %}
+                        <span class="px-1.5 py-0.5 rounded bg-red-50 text-red-700 border border-red-200">
+                            to floor
+                        </span>
+                    {% elif r.recovered_to_entry %}
+                        <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                            to entry
+                        </span>
+                    {% else %}
+                        <span class="text-stone-400">—</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Chart.js + adapters (this page only) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+
+<script>
+function leakageScatter(data) {
+    return {
+        scatter: data,
+        _chart:  null,
+
+        render() {
+            const ctx = this.$refs.canvas;
+            if (!ctx || !window.Chart || !this.scatter.length) return;
+
+            // Compute axis bounds so the y=x diagonal is centered.
+            const all = this.scatter;
+            const maxAbs = Math.max(
+                ...all.map(p => Math.abs(p.mfe)),
+                ...all.map(p => Math.abs(p.realized)),
+                10,  // floor so very small datasets still get a sensible range
+            );
+            const limit = Math.ceil(maxAbs / 25) * 25;  // round to nearest 25%
+
+            // Two scatter datasets so winners and losers can be styled
+            // separately without per-point colors (cleaner legend).
+            const wins   = all.filter(p => p.win).map(p => ({
+                x: p.mfe, y: p.realized, ticker: p.ticker, intent_id: p.intent_id,
+            }));
+            const losses = all.filter(p => !p.win).map(p => ({
+                x: p.mfe, y: p.realized, ticker: p.ticker, intent_id: p.intent_id,
+            }));
+
+            if (this._chart) this._chart.destroy();
+            this._chart = new Chart(ctx, {
+                type: 'scatter',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Win',
+                            data: wins,
+                            backgroundColor: 'rgba(16, 185, 129, 0.55)',  // emerald-500
+                            borderColor:     'rgba(5, 150, 105, 0.9)',
+                            pointRadius: 4, pointHoverRadius: 6,
+                        },
+                        {
+                            label: 'Loss',
+                            data: losses,
+                            backgroundColor: 'rgba(239, 68, 68, 0.55)',   // red-500
+                            borderColor:     'rgba(220, 38, 38, 0.9)',
+                            pointRadius: 4, pointHoverRadius: 6,
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    onClick: (evt, items) => {
+                        if (items.length) {
+                            const p = items[0].element.$context.raw;
+                            if (p && p.intent_id) {
+                                window.location.href = `/trades/${p.intent_id}`;
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top', align: 'end',
+                            labels: { boxWidth: 10, font: { size: 11 } },
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: (item) => {
+                                    const p = item.raw;
+                                    return `${p.ticker}: MFE +${p.x.toFixed(1)}% · realized ${p.y >= 0 ? '+' : ''}${p.y.toFixed(1)}%`;
+                                },
+                            },
+                        },
+                        annotation: {
+                            annotations: {
+                                // y = x diagonal — perfect capture
+                                perfectCapture: {
+                                    type: 'line',
+                                    xMin: -limit, xMax: limit,
+                                    yMin: -limit, yMax: limit,
+                                    borderColor: 'rgba(120, 113, 108, 0.5)',
+                                    borderWidth: 1,
+                                    borderDash: [4, 4],
+                                    label: {
+                                        display: true,
+                                        content: 'Perfect capture',
+                                        position: 'end',
+                                        backgroundColor: 'rgba(120, 113, 108, 0.85)',
+                                        color: '#fff',
+                                        font: { size: 10 },
+                                        padding: { x: 4, y: 2 },
+                                    },
+                                },
+                                // y = 0 zero line — breakeven on realized P&L
+                                breakeven: {
+                                    type: 'line',
+                                    yMin: 0, yMax: 0,
+                                    borderColor: 'rgba(120, 113, 108, 0.3)',
+                                    borderWidth: 1,
+                                },
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'MFE in-trade %',
+                                     color: 'rgb(120, 113, 108)', font: { size: 11 } },
+                            min: -limit, max: limit,
+                            grid: { color: 'rgba(0,0,0,0.04)' },
+                            ticks: {
+                                font: { size: 10 }, color: 'rgb(120, 113, 108)',
+                                callback: v => `${v}%`,
+                            },
+                        },
+                        y: {
+                            title: { display: true, text: 'Realized %',
+                                     color: 'rgb(120, 113, 108)', font: { size: 11 } },
+                            min: -limit, max: limit,
+                            grid: { color: 'rgba(0,0,0,0.04)' },
+                            ticks: {
+                                font: { size: 10 }, color: 'rgb(120, 113, 108)',
+                                callback: v => `${v}%`,
+                            },
+                        },
+                    },
+                },
+            });
+        },
+    };
+}
+</script>
+
+{% endblock %}

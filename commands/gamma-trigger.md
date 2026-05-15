@@ -12,8 +12,7 @@ Quick live-setup check.
 ```
 
 ```bash
-PLUGIN_DIR="${CLAUDE_PLUGIN_DIR:-$HOME/.claude/plugins/gammatrade}"
-cd "$PLUGIN_DIR"
+cd "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT not set — run this as a slash command}"
 
 TICKER="${1:?Usage: /gamma-trigger <TICKER>}"
 TICKER="$(echo "$TICKER" | tr '[:lower:]' '[:upper:]')"

@@ -6,15 +6,19 @@ description: Start the gammatrade local FastAPI server on port 8765. Idempotent 
 Start the gammatrade dashboard server.
 
 ```bash
-PLUGIN_DIR="$(cd "$(dirname "$(realpath "$0")")/../" 2>/dev/null && pwd)" \
-    || PLUGIN_DIR="$HOME/.claude/plugins/gammatrade"
-
-cd "$PLUGIN_DIR" 2>/dev/null || cd ~/.claude/plugins/gammatrade
+cd "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT not set — run this as a /gamma-start slash command}"
 
 # Check if already running
 if lsof -ti:8765 >/dev/null 2>&1; then
     echo "✓ Server already running at http://localhost:8765"
     exit 0
+fi
+
+# Ensure runtime deps are present (idempotent — pip skips already-installed)
+if ! python3 -c "import uvicorn, fastapi, jinja2" 2>/dev/null; then
+    echo "→ installing runtime dependencies..."
+    python3 -m pip install --quiet --user -r automation/requirements.txt \
+        || { echo "✗ pip install failed"; exit 1; }
 fi
 
 # Launch in background

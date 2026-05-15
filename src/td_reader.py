@@ -502,10 +502,16 @@ def merge_td_into_master(
 
     if new_rows:
         appended = pd.DataFrame(new_rows)
-        for col in df.columns:
-            if col not in appended.columns:
-                appended[col] = ""
-        appended = appended[df.columns]
-        df = pd.concat([df, appended], ignore_index=True)
+        if len(df.columns) == 0:
+            # First-ever append: master is empty and has no schema yet.
+            # Adopt the new rows' columns directly instead of reindexing onto
+            # an empty column set (which would produce a 0-column frame).
+            df = appended.copy()
+        else:
+            for col in df.columns:
+                if col not in appended.columns:
+                    appended[col] = ""
+            appended = appended[df.columns]
+            df = pd.concat([df, appended], ignore_index=True)
 
     return df, new_rows, updated_rows

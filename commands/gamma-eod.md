@@ -6,8 +6,7 @@ description: End-of-day journal. Pulls today's closed trades from the local SQLi
 Run an end-of-day review of today's trading.
 
 ```bash
-PLUGIN_DIR="${CLAUDE_PLUGIN_DIR:-$HOME/.claude/plugins/gammatrade}"
-cd "$PLUGIN_DIR"
+cd "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT not set — run this as a slash command}"
 
 python3 -c "
 from automation import analytics
@@ -31,4 +30,27 @@ After this prints today's mechanical summary, your Claude Code session walks thr
 3. **Risk-cap check**: did any limit get breached (daily $ loss, daily count, sector concentration)?
 4. **One lesson**: the single most actionable takeaway
 
-Save the reflection to `data/journal/<YYYY-MM-DD>.md` so it shows up in the dashboard timeline.
+Save the reflection to the webapp's journal using `automation.journal.save()`,
+which writes to `~/.gamma/automation/journal/<YYYY-MM-DD>.json` and appears
+immediately on the Journal tab:
+
+```python
+from automation import journal
+from datetime import date
+journal.save({
+    "date":           date.today().isoformat(),
+    "plan_adherence": "...",   # free-form per the walkthrough
+    "wins":           "...",
+    "losses":         "...",
+    "mfe_gaps":       "...",
+    "lessons":        "...",   # the one-line takeaway
+    "notes":          "...",
+})
+```
+
+The save is idempotent — re-running `/gamma-eod` on the same day updates
+the existing entry (keeping `ts_created`, refreshing `ts_updated`). Open
+`http://localhost:8765/journal/<YYYY-MM-DD>` to see it rendered alongside
+the auto-computed plan-adherence score (which compares the day's actual
+trades against the pregame analysis cached at
+`~/.gamma/automation/analyses/<date>.json`).
