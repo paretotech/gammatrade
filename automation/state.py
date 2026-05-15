@@ -312,6 +312,24 @@ def list_trade_intents(status: str | None = None, limit: int = 100, path: Path =
     return [dict(r) for r in rows]
 
 
+def pending_intents(path: Path = DB_PATH) -> list[dict]:
+    """Intents at status='pending' — entries that were accepted by gates
+    but have not yet been recorded as filled. These are the staging area:
+    something you've decided to take but the fill hasn't been logged
+    (manual paper-trading) or routed to the broker yet.
+    """
+    with connect(path) as conn:
+        rows = conn.execute(
+            """SELECT intent_id, ticker, expiry, strike, right, contracts,
+                      order_type, limit_price, regime_tag, sector,
+                      notes, created_at, brando_alert_id
+               FROM trade_intents
+               WHERE status = 'pending'
+               ORDER BY created_at DESC""",
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def open_positions(path: Path = DB_PATH) -> list[dict]:
     """Return open positions (entries with fills, no full close yet).
     Each position is annotated with `tp_status` — a list of 3 dicts

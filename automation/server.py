@@ -79,47 +79,9 @@ def nav_context() -> dict:
 
 # ─── Dashboard ──────────────────────────────────────────────────────────────
 
-@app.get("/playbooks", response_class=HTMLResponse)
-async def playbooks_view(request: Request, range: Optional[str] = None) -> HTMLResponse:
-    """Per-setup-tag gallery — N, WR, median ROI, total P&L plus 3
-    best-example trades and 1 cautionary tale per tag."""
-    from . import analytics as _a
-    rng = _norm_range(range)
-    return TEMPLATES.TemplateResponse(
-        "playbooks.html",
-        {
-            "request":    request,
-            "page_title": "Playbooks",
-            "range_key":  rng,
-            "rows":       _a.playbook_gallery(range_key=rng),
-            **nav_context(),
-        },
-    )
-
-
-@app.get("/today", response_class=HTMLResponse)
-async def today_view(request: Request) -> HTMLResponse:
-    """Morning-briefing dashboard — pregame summary + levels to watch +
-    recent performance + watchlist. Pure composition; no new analytics."""
-    from . import analytics as _a
-    try:
-        cap = app.state.rules.daily_loss_cap()
-    except Exception:
-        cap = 1000.0
-    return TEMPLATES.TemplateResponse(
-        "today.html",
-        {
-            "request":    request,
-            "page_title": "Today",
-            "data":       _a.today_dashboard(loss_cap=cap),
-            **nav_context(),
-        },
-    )
-
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request) -> HTMLResponse:
+def _render_dashboard(request: Request, *, parsed_alerts=None, alert_text: str = "") -> HTMLResponse:
     positions = state.open_positions()
+    pending = state.pending_intents()
     metric = state.daily_metric()
     chains = state.open_chains()
     waiting_triggers = triggers_mod.list_triggers(status="waiting")
@@ -136,14 +98,92 @@ async def dashboard(request: Request) -> HTMLResponse:
             "request": request,
             "page_title": "Dashboard",
             "positions": positions,
+            "pending": pending,
             "open_count": len(positions),
             "open_value": total_open_value,
             "today": metric,
             "chains": chains,
             "waiting_triggers": waiting_triggers,
+            "parsed_alerts": parsed_alerts,
+            "alert_text": alert_text,
             **nav_context(),
         },
     )
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request) -> HTMLResponse:
+    return _render_dashboard(request)
+
+
+@app.post("/alerts/parse", response_class=HTMLResponse)
+async def alerts_parse(request: Request,
+                          alert_text: str = Form("")) -> HTMLResponse:
+    """Parse pasted Brando-style Discord alerts. One alert per non-empty
+    line. Returns the dashboard with a parse-result block at the top."""
+    from datetime import date as _date
+    from src.contract_symbols import parse_brando_discord_alert
+
+    today = _date.today()
+    parsed: list[dict] = []
+    for raw in alert_text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            a = parse_brando_discord_alert(line, today)
+            parsed.append({
+                "ok": True,
+                "raw": line,
+                "action": a.action,
+                "ticker": a.contract.ticker,
+                "expiry": a.contract.expiry.isoformat(),
+                "strike": a.contract.strike,
+                "right": a.contract.option_type,
+                "fill_price": a.fill_price,
+            })
+        except ValueError as e:
+            parsed.append({"ok": False, "raw": line, "error": str(e)})
+
+    return _render_dashboard(request, parsed_alerts=parsed, alert_text=alert_text)
+
+
+@app.post("/intents/{intent_id}/fill", response_class=HTMLResponse)
+async def intent_record_fill(request: Request, intent_id: str,
+                                fill_price: float = Form(...),
+                                contracts: Optional[int] = Form(None)
+                                ) -> RedirectResponse:
+    """Record a synthetic BUY fill for a pending intent and transition it
+    to status='filled'. Used to promote a staged intent (e.g. Brando alert)
+    into an open position once the user confirms they actually took it."""
+    intent = state.get_intent(intent_id)
+    if not intent or intent.get("status") != "pending":
+        return RedirectResponse(url="/", status_code=303)
+    qty = contracts if contracts and contracts > 0 else int(intent["contracts"])
+    state.insert_fill(intent_id, side="BUY", contracts=qty,
+                      price=float(fill_price), is_entry=True)
+    with state.connect() as conn:
+        conn.execute("UPDATE trade_intents SET status = 'filled' WHERE intent_id = ?",
+                     (intent_id,))
+    telemetry.log_event("manual_entry_fill", {
+        "intent_id": intent_id, "ticker": intent["ticker"],
+        "price": float(fill_price), "contracts": qty,
+    })
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/intents/{intent_id}/cancel", response_class=HTMLResponse)
+async def intent_cancel(request: Request, intent_id: str) -> RedirectResponse:
+    intent = state.get_intent(intent_id)
+    if not intent or intent.get("status") != "pending":
+        return RedirectResponse(url="/", status_code=303)
+    with state.connect() as conn:
+        conn.execute("UPDATE trade_intents SET status = 'canceled' WHERE intent_id = ?",
+                     (intent_id,))
+    telemetry.log_event("intent_canceled", {
+        "intent_id": intent_id, "ticker": intent["ticker"],
+    })
+    return RedirectResponse(url="/", status_code=303)
 
 
 # ─── New Entry ──────────────────────────────────────────────────────────────
@@ -201,6 +241,11 @@ async def new_entry_form(
     sector: Optional[str] = None,
     note_date: Optional[str] = None,
     extra: Optional[str] = None,
+    expiry: Optional[str] = None,
+    strike: Optional[float] = None,
+    right: Optional[str] = None,
+    limit_price: Optional[float] = None,
+    source: Optional[str] = None,
 ) -> HTMLResponse:
     import json as _json
     rules: Rules = app.state.rules
@@ -236,6 +281,7 @@ async def new_entry_form(
             "splits": [int(s * 100) for s in l["splits"]],
         }
 
+    right_u = (right or "").upper()
     prefill = {
         "ticker": ticker_u,
         "level": level,
@@ -243,9 +289,13 @@ async def new_entry_form(
         "sector": sector,
         "note_date": note_date,
         "extras_json": _json.dumps(extras_list),
-        "default_expiry": default_friday_expiry(),
-        "default_strike": default_strike,
-        "default_right": "P" if direction in ("below", "hold_below", "bounce_below") else "C",
+        "default_expiry": expiry or default_friday_expiry(),
+        "default_strike": strike if strike is not None else default_strike,
+        "default_right": right_u if right_u in ("C", "P") else (
+            "P" if direction in ("below", "hold_below", "bounce_below") else "C"),
+        "limit_price": limit_price,
+        "order_type": "LMT" if limit_price is not None else "MKT",
+        "source": source,
         "presets_json": _json.dumps(presets_computed),
     }
     # Budget strip for the page header — entries used + today's $ P&L vs cap
@@ -2664,6 +2714,7 @@ async def broker_dryrun_form(request: Request) -> HTMLResponse:
             "tp_meta": None,
             "stop_result": None,
             "stop_meta": None,
+            "execute_result": None,
             **nav_context(),
         },
     )
@@ -2716,7 +2767,7 @@ async def broker_dryrun_submit(
         tp_results = None
         tp_meta = None
     else:
-        result = await broker.submit_entry(intent)
+        result = await broker.submit_entry(intent, force_dry_run=True)
         tp_results = None
         tp_meta = None
 
@@ -2780,6 +2831,7 @@ async def broker_dryrun_submit(
             "result": result,
             "tp_results": tp_results,
             "tp_meta": tp_meta,
+            "execute_result": None,
             "stop_result": stop_result,
             "stop_meta": stop_meta,
             "submitted": {
@@ -2793,6 +2845,94 @@ async def broker_dryrun_submit(
             **nav_context(),
         },
     )
+
+
+# ─── Live execution: place a real order via IBKR ────────────────────────────
+
+@app.post("/settings/broker/execute", response_class=HTMLResponse)
+async def broker_execute(
+    request: Request,
+    ticker: str = Form(...),
+    expiry: str = Form(...),
+    strike: float = Form(...),
+    right: str = Form(...),
+    contracts: int = Form(1),
+    order_type: str = Form("MKT"),
+    limit_price: Optional[str] = Form(None),
+    confirm_execute: Optional[str] = Form(None),
+) -> HTMLResponse:
+    """Place a real order on IBKR. Requires:
+      - broker connected, backend=ibkr
+      - broker writable (BROKER_READONLY=0)
+      - confirm_execute=yes (UI checkbox)
+    Returns the broker_dryrun page with the live-execution result block.
+    """
+    from .rules import default_friday_expiry
+    from .orders import TradeIntent
+
+    broker = app.state.broker
+    health = broker.health()
+
+    limit_f = None
+    if limit_price and limit_price.strip():
+        try:
+            limit_f = float(limit_price)
+        except ValueError:
+            limit_f = None
+
+    submitted = {
+        "ticker": ticker.upper(), "expiry": expiry, "strike": strike,
+        "right": right.upper(), "contracts": contracts,
+        "order_type": order_type.upper(), "limit_price": limit_price,
+        "test_tp_ladder": False, "tp_preset": "auto", "tp_split": "50_25_25",
+        "stop_initial_pct": None,
+    }
+
+    def render(execute_result):
+        return TEMPLATES.TemplateResponse(
+            "broker_dryrun.html",
+            {
+                "request": request,
+                "page_title": "Settings",
+                "active_tab": "broker",
+                "broker": broker.health(),
+                "default_expiry": default_friday_expiry(),
+                "result": None,
+                "tp_results": None, "tp_meta": None,
+                "stop_result": None, "stop_meta": None,
+                "execute_result": execute_result,
+                "submitted": submitted,
+                **nav_context(),
+            },
+        )
+
+    if confirm_execute != "yes":
+        return render({"status": "error",
+                        "error": "Missing execute confirmation checkbox."})
+    if not health["connected"] or health["backend"] != "ibkr":
+        return render({"status": "error",
+                        "error": "Broker not connected to IBKR."})
+    if health.get("readonly"):
+        return render({"status": "error",
+                        "error": "Broker is in read-only mode. Restart server with "
+                                  "BROKER_READONLY=0 to enable live execution."})
+
+    intent = TradeIntent(
+        ticker=ticker.upper(), expiry=expiry, strike=strike,
+        right=right.upper(), contracts=contracts,
+        order_type=order_type.upper(), limit_price=limit_f,
+        regime_tag="MANUAL", chain_role="solo", sector="manual",
+    )
+
+    try:
+        result = await broker.submit_entry(intent)
+    except PermissionError as e:
+        result = {"status": "error", "error": str(e)}
+    except Exception as e:
+        result = {"status": "error",
+                  "error": f"submit_entry raised: {type(e).__name__}: {e}"}
+
+    return render(result)
 
 
 # ─── Settings: Event Log ────────────────────────────────────────────────────
